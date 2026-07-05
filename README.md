@@ -88,9 +88,19 @@ meeting-ai-copilot/
 ## 诊断与测试
 
 ```powershell
+python -m py_compile src\cloud_runtime.py src\cloud_asr_volcengine.py
+.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.example.json --smoke-test
 .venv\Scripts\python.exe src\cloud_asr_volcengine.py --diagnose
 .venv\Scripts\python.exe src\cloud_asr_volcengine.py --test-asr-handshake
 .venv\Scripts\python.exe src\cloud_asr_volcengine.py --test-ai
+```
+
+### Docker Desktop smoke
+
+Docker 容器用于验证依赖安装、配置加载、ASR 请求构造和问题识别逻辑；Windows 系统声音采集仍需在宿主机运行。
+
+```powershell
+docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-copilot
 ```
 
 ## 版本

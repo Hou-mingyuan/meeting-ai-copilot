@@ -468,16 +468,48 @@ async def test_cloud_asr_handshake(config: dict[str, Any], logger: Logger) -> in
     return 0
 
 
+def run_smoke_test(config_path: Path) -> int:
+    config = load_config(config_path)
+    start_request = build_start_request(config)
+
+    sample_rate = int(config.get("cloud_asr_sample_rate", 16000))
+    if start_request["audio"]["rate"] != sample_rate:
+        raise RuntimeError("ASR 请求采样率与配置不一致")
+
+    resource_id = str(config.get("cloud_asr_resource_id") or "").strip()
+    if not resource_id:
+        raise RuntimeError("cloud_asr_resource_id 未配置")
+
+    positive_question = "Can you explain the difference between Redis cache and MySQL index?"
+    negative_text = "今天会议先同步项目进度"
+    if not is_question_like(positive_question, config):
+        raise RuntimeError("问题识别启发式未命中英文问题")
+    if is_question_like(negative_text, config):
+        raise RuntimeError("问题识别启发式误判普通陈述")
+
+    print("SMOKE OK: config loaded")
+    print("SMOKE OK: ASR start request built")
+    print("SMOKE OK: AI question heuristic passed")
+    print(f"cloud_asr_provider={config.get('cloud_asr_provider')}")
+    print(f"ai_wire_api={config.get('ai_wire_api')}")
+    print(f"ai_model={config.get('ai_model')}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="火山云端实时 ASR + AI 答案")
     parser.add_argument("--config", default="config.json", help="配置文件路径")
     parser.add_argument("--test-ai", action="store_true", help="只测试 AI 接口")
     parser.add_argument("--test-asr-handshake", action="store_true", help="只测试火山实时 ASR WebSocket 握手")
     parser.add_argument("--diagnose", action="store_true", help="诊断云端实时 ASR、AI、依赖和音频设备")
+    parser.add_argument("--smoke-test", action="store_true", help="无密钥、无音频设备的容器/CI 快速自检")
     parser.add_argument("--list-devices", action="store_true", help="列出可用音频设备")
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
+    if args.smoke_test:
+        return run_smoke_test(config_path)
+
     config = load_config(config_path)
     paths = build_paths(config)
     logger = Logger(paths.log_file)

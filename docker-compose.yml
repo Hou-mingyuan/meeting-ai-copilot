@@ -1,0 +1,10 @@
+services:
+  meeting-ai-copilot:
+    build: .
+    image: meeting-ai-copilot:local
+    command:
+      - python
+      - src/cloud_asr_volcengine.py
+      - --config
+      - config.example.json
+      - --smoke-test

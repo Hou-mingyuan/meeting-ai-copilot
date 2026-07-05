@@ -47,11 +47,21 @@ copy config.example.json config.json
 ## 命令行
 
 ```powershell
+python -m py_compile src\cloud_runtime.py src\cloud_asr_volcengine.py
+.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.example.json --smoke-test
 .venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.json
 .venv\Scripts\python.exe src\cloud_asr_volcengine.py --diagnose
 .venv\Scripts\python.exe src\cloud_asr_volcengine.py --list-devices
 .venv\Scripts\python.exe src\cloud_asr_volcengine.py --test-asr-handshake
 .venv\Scripts\python.exe src\cloud_asr_volcengine.py --test-ai
+```
+
+## Docker Desktop 诊断
+
+Docker 模式只做依赖安装、配置加载、ASR 请求构造和问题识别自检，不用于采集 Windows 系统声音。
+
+```powershell
+docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-copilot
 ```
 
 ## 常见问题
