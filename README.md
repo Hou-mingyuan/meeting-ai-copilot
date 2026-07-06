@@ -54,7 +54,7 @@ copy config.example.json config.json
 启动云端实时转写和AI答案.bat
 ```
 
-详细步骤见 [USAGE.md](USAGE.md)。
+详细步骤见 [USAGE.md](USAGE.md)。部署运维见 [DEPLOYMENT.md](DEPLOYMENT.md)，安全策略见 [SECURITY.md](SECURITY.md)。
 
 ## 配置
 
@@ -81,6 +81,8 @@ meeting-ai-copilot/
 ├── 启动云端实时转写和AI答案.bat
 ├── README.md
 ├── USAGE.md
+├── DEPLOYMENT.md
+├── SECURITY.md
 ├── CHANGELOG.md
 └── VERSION
 ```
