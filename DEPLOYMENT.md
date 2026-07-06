@@ -48,15 +48,36 @@ $env:VOLCENGINE_CODING_PLAN_API_KEY = "your-ai-key"
 
 跨天自动切换日期文件；断网 ASR 会自动重连。
 
-## 5. Docker 诊断部署
+## 5. Docker 诊断部署与演示边界
 
-用于验证镜像构建与 smoke 逻辑（Linux/macOS/Windows Docker Desktop 均可）：
+### 5.1 验收范围（Portfolio / CI）
+
+Docker 在本项目中的**可验收目标**是：镜像可构建、依赖可安装、`--smoke-test` 与问题识别逻辑可跑通。这与 Hub Profile「meeting-ai-copilot 无容器、Windows 原生」的定位一致。
+
+| 能力 | Docker smoke | Windows 宿主机 |
+| --- | --- | --- |
+| 配置加载 / ASR 请求构造 | ✓ | ✓ |
+| 问题识别启发式 | ✓ | ✓ |
+| WASAPI 系统声音采集 | ✗ | ✓ |
+| 真实火山 ASR/LLM 流式 | ✗（需 BYOK + 宿主机） | ✓ |
 
 ```powershell
 docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-copilot
 ```
 
-预期输出包含 `SMOKE OK:` 三行。容器内**不**运行真实音频采集。
+预期输出包含 `SMOKE OK:` 三行。容器内**不**运行真实音频采集——这是**设计限制**，不是部署失败。
+
+### 5.2 零密钥 Mock 演示（非 Docker 容器内）
+
+完整「会议→转写→AI 流式答案」闭环请用本地 Mock 服务（不消耗 API Key）：
+
+```powershell
+.\scripts\demo-mock.ps1
+# 或: python loadtest\mock_server.py --port 8765
+#     python loadtest\dry_run.py --base-url http://127.0.0.1:8765
+```
+
+详见 README「零密钥 Mock 演示」与 `config.mock.json`。
 
 ## 6. 升级流程
 

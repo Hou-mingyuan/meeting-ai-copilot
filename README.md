@@ -98,23 +98,30 @@ python -m py_compile src\cloud_runtime.py src\cloud_asr_volcengine.py
 .venv\Scripts\python.exe src\cloud_asr_volcengine.py --test-ai
 ```
 
-### Docker Desktop smoke
+### Docker Desktop smoke（CI / 依赖验收）
 
-Docker 容器用于验证依赖安装、配置加载、ASR 请求构造和问题识别逻辑；Windows 系统声音采集仍需在宿主机运行。
+Docker 容器用于验证依赖安装、配置加载、ASR 请求构造和问题识别逻辑；**不**采集 Windows 系统声音（见 [DEPLOYMENT.md §5](DEPLOYMENT.md#5-docker-诊断部署与演示边界) 能力对照表）。Portfolio Hub 将本项目标记为 Windows 原生，Docker smoke 即该维度的可验收基线。
 
 ```powershell
 docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-copilot
 ```
 
+零密钥完整演示链路请用 `.\scripts\demo-mock.ps1`（Mock ASR/AI，非 Docker 内）。
+
 ## 演示指南
 
 面向作品集评审与首次体验。**本项目不提供内置演示账号**，采用 BYOK（Bring Your Own Key）模式：自备火山引擎 ASR Key 与 Coding Plan AI Key 后，按下列顺序完成配置、验收与核心流程演示。
 
-### 零密钥 Mock 演示（LLM/ASR provider = mock）
+### 零密钥 Mock 演示（`ai_provider=mock` · 无需火山 Key）
 
-无需火山 API Key，本地 Mock 服务模拟 **会议音频 → ASR 流式转写 → 识别问题 → AI 流式参考答案** 全链路（与 chatbi `LLM_PROVIDER=mock` 同类体验，配置见 `config.mock.json`）。
+| 步骤 | 命令 / 操作 | 预期 |
+| --- | --- | --- |
+| ✓ | `python src/cloud_asr_volcengine.py --config config.example.json --smoke-test` | 三行 `SMOKE OK:` |
+| ✓ | `python src/cloud_asr_volcengine.py --config config.mock-offline.json --test-ai` | 内置 Mock 流式答案，无需 HTTP |
+| ✓ | `.\scripts\demo-mock.ps1` | `MOCK DEMO OK`（ASR+AI 全链路 Mock 服务） |
+| ✓ | `docker compose up …` | 容器 smoke，同上三行 OK |
 
-**一键演示（PowerShell）：**
+**一键 Mock 闭环（PowerShell）：**
 
 ```powershell
 .\scripts\demo-mock.ps1
@@ -135,7 +142,7 @@ python scripts\demo_mock_loop.py --base-url http://127.0.0.1:8765   # 终端 2
 | --- | --- |
 | 内置演示账号 | **无** — 不向仓库写入任何共享 Key |
 | 体验方式 | 复制 `config.example.json` → 填入自有密钥，或设置环境变量 |
-| 无 Key 时可验收 | `--smoke-test`、Docker smoke、**`scripts/demo-mock.ps1` Mock 闭环** |
+| 无 Key 时可验收 | `--smoke-test`、`--test-ai`（`config.mock-offline.json`）、`scripts/demo-mock.ps1`、Docker smoke |
 
 ### BYOK 配置
 
