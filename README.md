@@ -110,13 +110,32 @@ docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-
 
 面向作品集评审与首次体验。**本项目不提供内置演示账号**，采用 BYOK（Bring Your Own Key）模式：自备火山引擎 ASR Key 与 Coding Plan AI Key 后，按下列顺序完成配置、验收与核心流程演示。
 
+### 零密钥 Mock 演示（LLM/ASR provider = mock）
+
+无需火山 API Key，本地 Mock 服务模拟 **会议音频 → ASR 流式转写 → 识别问题 → AI 流式参考答案** 全链路（与 chatbi `LLM_PROVIDER=mock` 同类体验，配置见 `config.mock.json`）。
+
+**一键演示（PowerShell）：**
+
+```powershell
+.\scripts\demo-mock.ps1
+```
+
+或手动两步：
+
+```powershell
+python loadtest\mock_server.py --port 8765          # 终端 1
+python scripts\demo_mock_loop.py --base-url http://127.0.0.1:8765   # 终端 2
+```
+
+预期末尾输出 `MOCK DEMO OK（未调用火山 ASR/LLM API）`。Mock 不采集 Windows 系统声音；真实会议请走 BYOK 路径。
+
 ### 演示账号说明
 
 | 项目 | 说明 |
 | --- | --- |
 | 内置演示账号 | **无** — 不向仓库写入任何共享 Key |
 | 体验方式 | 复制 `config.example.json` → 填入自有密钥，或设置环境变量 |
-| 无 Key 时可验收 | `--smoke-test` + Docker smoke 可验证依赖与逻辑，**不能**替代真实会议转写 |
+| 无 Key 时可验收 | `--smoke-test`、Docker smoke、**`scripts/demo-mock.ps1` Mock 闭环** |
 
 ### BYOK 配置
 
