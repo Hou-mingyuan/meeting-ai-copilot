@@ -54,3 +54,44 @@ jobs:
 
       - name: Docker Compose smoke
         run: docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-copilot
+
+  loadtest-k6:
+    name: Mock loadtest (dry-run + k6 thresholds)
+    runs-on: ubuntu-latest
+    needs: [python-quality]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start mock server
+        run: |
+          python loadtest/mock_server.py --port 8765 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8765/health >/dev/null; then
+              echo "Mock server ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Mock server failed to start"
+          exit 1
+
+      - name: Python dry-run gate
+        run: python loadtest/dry_run.py --base-url http://127.0.0.1:8765 --iterations 20 --concurrency 4
+
+      - name: Install k6
+        run: |
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      - name: k6 smoke + burst (CI thresholds)
+        env:
+          MOCK_BASE_URL: http://127.0.0.1:8765
+        run: k6 run loadtest/k6_smoke.js
