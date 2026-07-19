@@ -133,6 +133,8 @@ python src\cloud_asr_volcengine.py --config config.example.json --smoke-test
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-07-06 | dry_run | 4 | 33 ms | 190 ms | 331 ms | 0 | mock @8765，20 iter，PASSED |
 | 2026-07-06 | locust | 100 users | — | — | — | 0 | `is_question_like_batch` p95=0ms，`load_config` p95=4ms，22950 reqs |
+| 2026-07-06 | locust | **50 users** | — | — | — | **0** | `is_question_like_batch` p95=0ms，`load_config` p95=2ms，12476 reqs · 30s |
+| 2026-07-06 | locust | **50 users (Round-5)** | — | — | — | **0** | `is_question_like_batch` p95=1ms，`load_config` p95=16ms，6895 reqs · 30s · project-hub-1 复跑 |
 | 2026-07-06 | k6 (Docker) | 5 | 50 ms | — | 108 ms | 0.48% | `host.docker.internal` 桥接偶发超时 |
 
 dry_run 摘要（2026-07-06）：

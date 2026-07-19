@@ -28,6 +28,10 @@ try {
     python scripts/demo_mock_loop.py --base-url $base
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    Write-Host "`n--- dry_run 压测 smoke ---" -ForegroundColor Cyan
+    python loadtest/dry_run.py --base-url $base --iterations 12 --concurrency 4
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     Write-Host "`n提示: 真实会议转写请使用 config.json + 启动云端实时转写和AI答案.bat" -ForegroundColor Gray
 } finally {
     Stop-Job $mockJob -ErrorAction SilentlyContinue

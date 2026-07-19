@@ -5,6 +5,7 @@ import asyncio
 import json
 import queue
 import signal
+import sys
 import threading
 import time
 import uuid
@@ -25,6 +26,8 @@ from cloud_runtime import (
     build_paths,
     diagnose_environment,
     get_ai_api_key,
+    is_ai_ready,
+    is_mock_ai,
     is_question_like,
     list_devices,
     load_config,
@@ -34,6 +37,8 @@ from cloud_runtime import (
     stream_ai_answer_api,
     write_partial_transcript_today,
 )
+from status_tui import StatusTui
+from transcript_question_fsm import PartialQuestionState, on_partial_update, on_receive_timeout
 
 
 def get_cloud_asr_key(config: dict[str, Any], field: str, env_name: str) -> str:
@@ -182,6 +187,7 @@ def audio_capture_worker(
     stop_event: threading.Event,
     config: dict[str, Any],
     logger: Logger,
+    status_tui: StatusTui | None = None,
 ) -> None:
     sample_rate = int(config.get("cloud_asr_sample_rate", 16000))
     chunk_ms = int(config.get("cloud_asr_chunk_ms", 100))
@@ -194,6 +200,8 @@ def audio_capture_worker(
     while not stop_event.is_set():
         device = select_active_loopback_microphone(config.get("audio_device"), sample_rate, logger)
         logger.write(f"云端 ASR 开始监听系统声音：{device.name}，chunk={chunk_ms}ms")
+        if status_tui is not None:
+            status_tui.set_capture("监听中")
         silent_chunks = 0
         captured_audio = False
 
@@ -214,6 +222,8 @@ def audio_capture_worker(
                     if level >= silence_threshold:
                         captured_audio = True
                         silent_chunks = 0
+                        if status_tui is not None:
+                            status_tui.set_capture("采集中")
                     elif not config.get("audio_device"):
                         silent_chunks += 1
 
@@ -249,14 +259,13 @@ async def receive_responses(
     config: dict[str, Any],
     logger: Logger,
     ai_queue: "queue.Queue[tuple[str, str]] | None",
+    status_tui: StatusTui | None = None,
 ) -> None:
     last_partial = ""
     recent_finals: list[str] = []
     asked_questions: list[str] = []
     ai_state: dict[str, Any] = {}
-    pending_question = ""
-    pending_since = 0.0
-    stable_seconds = max(0.2, float(config.get("ai_partial_stable_seconds", 0.8)))
+    partial_state = PartialQuestionState()
 
     def normalize(value: str) -> str:
         return " ".join(value.lower().split())
@@ -281,6 +290,8 @@ async def receive_responses(
         if len(asked_questions) > 40:
             asked_questions.pop(0)
         maybe_enqueue_ai_question(ai_queue, config, logger, ai_state, "云端实时ASR", text)
+        if status_tui is not None:
+            status_tui.set_ai("排队")
 
     while not stop_event.is_set():
         try:
@@ -289,9 +300,9 @@ async def receive_responses(
         except asyncio.TimeoutError:
             # 手头有一个“像问题”的片段且已停顿超过阈值（说明这句问完了），
             # 立刻拿去问 AI，不再干等服务端把整句标记为 final（那通常要等到下一句才来）。
-            if pending_question and (time.monotonic() - pending_since) >= stable_seconds:
-                ask_ai_now(pending_question)
-                pending_question = ""
+            partial_state, ask_text = on_receive_timeout(partial_state, config, time.monotonic())
+            if ask_text:
+                ask_ai_now(ask_text)
             continue
 
         parsed = VolcengineAsrFunctionsV3.parse_response(raw)
@@ -326,6 +337,8 @@ async def receive_responses(
                         recent_finals.pop(0)
                     logger.write(f"云端识别结果[final]：{sentence}")
                     append_transcript_today(paths, config, sentence, "云端实时ASR")
+                    if status_tui is not None:
+                        status_tui.set_last_line(sentence)
                     ask_ai_now(sentence)
             else:
                 current_partial = sentence  # 最后一个未说完的，就是“正在说的这句”
@@ -335,19 +348,19 @@ async def receive_responses(
                 last_partial = current_partial
                 logger.write(f"云端识别结果[partial]：{current_partial}")
                 write_partial_transcript_today(paths, config, current_partial, "云端实时ASR-临时")
+                if status_tui is not None:
+                    status_tui.set_last_line(current_partial)
             # 只有“像问题”的在说片段才需要尽快回答；闲聊直接忽略。
-            if is_question_like(current_partial, config):
-                if current_partial.rstrip().endswith(("?", "？")):
-                    # 已经带问号，基本说完了，立刻问，不必再等停顿。
-                    ask_ai_now(current_partial)
-                    pending_question = ""
-                elif current_partial != pending_question:
-                    pending_question = current_partial
-                    pending_since = time.monotonic()
-            else:
-                pending_question = ""
+            partial_state, ask_text = on_partial_update(
+                partial_state,
+                current_partial,
+                config,
+                time.monotonic(),
+            )
+            if ask_text:
+                ask_ai_now(ask_text)
         else:
-            pending_question = ""
+            partial_state = PartialQuestionState()
 
 
 async def send_audio(websocket, audio_queue: "queue.Queue[bytes]", stop_event: threading.Event, logger: Logger) -> None:
@@ -368,7 +381,7 @@ async def send_audio(websocket, audio_queue: "queue.Queue[bytes]", stop_event: t
         logger.write(f"发送结束包失败：{exc!r}")
 
 
-async def run_cloud_asr(config: dict[str, Any], logger: Logger, paths) -> int:
+async def run_cloud_asr(config: dict[str, Any], logger: Logger, paths, status_tui: StatusTui | None = None) -> int:
     if not validate_cloud_asr_config(config, logger):
         return 2
 
@@ -379,18 +392,18 @@ async def run_cloud_asr(config: dict[str, Any], logger: Logger, paths) -> int:
 
     ai_queue: "queue.Queue[tuple[str, str]] | None" = None
     ai_thread: threading.Thread | None = None
-    if bool(config.get("ai_enabled")) and get_ai_api_key(config):
+    if bool(config.get("ai_enabled")) and is_ai_ready(config):
         ai_queue = queue.Queue(maxsize=10)
         ai_thread = threading.Thread(
             target=ai_answer_worker,
-            args=(ai_queue, stop_event, config, paths, logger),
+            args=(ai_queue, stop_event, config, paths, logger, status_tui),
             daemon=True,
         )
         ai_thread.start()
 
     capture_thread = threading.Thread(
         target=audio_capture_worker,
-        args=(audio_queue, stop_event, config, logger),
+        args=(audio_queue, stop_event, config, logger, status_tui),
         daemon=True,
     )
     capture_thread.start()
@@ -410,6 +423,8 @@ async def run_cloud_asr(config: dict[str, Any], logger: Logger, paths) -> int:
     reconnect_delay = 1.0
     while not stop_event.is_set():
         try:
+            if status_tui is not None:
+                status_tui.set_asr("连接中")
             async with websockets.connect(endpoint, additional_headers=headers, max_size=16 * 1024 * 1024) as websocket:
                 start_request = build_start_request(config)
                 first_packet = VolcengineAsrFunctionsV3.generate_asr_full_client_request(
@@ -419,9 +434,13 @@ async def run_cloud_asr(config: dict[str, Any], logger: Logger, paths) -> int:
                 )
                 await websocket.send(bytes(first_packet))
                 logger.write(f"火山实时 ASR 已连接，开始发送 {chunk_ms}ms 音频块。")
+                if status_tui is not None:
+                    status_tui.set_asr("已连接")
                 reconnect_delay = 1.0
 
-                receiver = asyncio.create_task(receive_responses(websocket, stop_event, paths, config, logger, ai_queue))
+                receiver = asyncio.create_task(
+                    receive_responses(websocket, stop_event, paths, config, logger, ai_queue, status_tui)
+                )
                 sender = asyncio.create_task(send_audio(websocket, audio_queue, stop_event, logger))
                 done, pending = await asyncio.wait({receiver, sender}, return_when=asyncio.FIRST_EXCEPTION)
                 for task in pending:
@@ -434,6 +453,8 @@ async def run_cloud_asr(config: dict[str, Any], logger: Logger, paths) -> int:
             if stop_event.is_set():
                 break
             logger.write(f"火山实时 ASR 连接断开，将自动重连：{exc!r}")
+            if status_tui is not None:
+                status_tui.set_asr("重连中")
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(10.0, reconnect_delay * 2)
 
@@ -503,12 +524,41 @@ def main() -> int:
     parser.add_argument("--test-asr-handshake", action="store_true", help="只测试火山实时 ASR WebSocket 握手")
     parser.add_argument("--diagnose", action="store_true", help="诊断云端实时 ASR、AI、依赖和音频设备")
     parser.add_argument("--smoke-test", action="store_true", help="无密钥、无音频设备的容器/CI 快速自检")
+    parser.add_argument("--mock-demo", action="store_true", help="零密钥 Mock 演示闭环（需 mock 服务或内置 Mock AI）")
     parser.add_argument("--list-devices", action="store_true", help="列出可用音频设备")
+    parser.add_argument(
+        "--tui",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="终端状态面板（采集/ASR/AI/最近一句）；默认在交互式终端开启",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
     if args.smoke_test:
         return run_smoke_test(config_path)
+
+    if args.mock_demo:
+        mock_cfg = config_path
+        if mock_cfg.name != "config.mock.json":
+            candidate = config_path.parent / "config.mock.json"
+            if candidate.is_file():
+                mock_cfg = candidate
+        import subprocess
+        import sys
+
+        script = Path(__file__).resolve().parent.parent / "scripts" / "demo_mock_loop.py"
+        base_url = "http://127.0.0.1:8765"
+        try:
+            cfg = load_config(mock_cfg)
+            base_url = str(cfg.get("mock_base_url") or base_url).rstrip("/")
+        except Exception:
+            pass
+        result = subprocess.run(
+            [sys.executable, str(script), "--base-url", base_url],
+            check=False,
+        )
+        return int(result.returncode)
 
     config = load_config(config_path)
     paths = build_paths(config)
@@ -523,8 +573,8 @@ def main() -> int:
         return 0
 
     if args.test_ai:
-        if not get_ai_api_key(config):
-            logger.write("AI API Key 未配置。")
+        if not is_ai_ready(config):
+            logger.write("AI 未配置。设置 ai_api_key 或 ai_provider=mock（见 config.mock.json）。")
             return 1
         question = "Can you explain the difference between MySQL index and Oracle index?"
         answer_file = start_ai_answer_stream_today(paths, config, question, "云端模式AI流式接口测试")
@@ -535,7 +585,10 @@ def main() -> int:
             delta_count += 1
             char_count += len(delta)
         finish_ai_answer_stream(answer_file)
-        logger.write(f"AI流式接口测试成功：chunks={delta_count}，chars={char_count}，结果已写入：{answer_file}")
+        mode = "Mock" if is_mock_ai(config) else "Live"
+        logger.write(
+            f"AI流式接口测试成功（{mode}）：chunks={delta_count}，chars={char_count}，结果已写入：{answer_file}"
+        )
         return 0
 
     if args.test_asr_handshake:
@@ -546,12 +599,18 @@ def main() -> int:
         logger.write("云端实时转写 + AI 答案启动")
         logger.write(f"输出文件：{paths.output_file}")
         logger.write(f"AI答案文件：{paths.ai_answer_file}")
-        if bool(config.get("ai_enabled")) and get_ai_api_key(config):
+        if bool(config.get("ai_enabled")) and is_ai_ready(config):
             paths.ai_answer_file.parent.mkdir(parents=True, exist_ok=True)
             paths.ai_answer_file.touch(exist_ok=True)
         logger.write("按 Ctrl+C 可停止。")
         logger.write("============================================================")
-        return asyncio.run(run_cloud_asr(config, logger, paths))
+        use_tui = args.tui if args.tui is not None else sys.stdout.isatty()
+        status_tui = StatusTui(enabled=use_tui)
+        status_tui.start()
+        try:
+            return asyncio.run(run_cloud_asr(config, logger, paths, status_tui))
+        finally:
+            status_tui.stop()
     except KeyboardInterrupt:
         logger.write("用户停止。")
         return 0

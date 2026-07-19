@@ -239,7 +239,7 @@ def diagnose_environment(config_path: Path, config: dict[str, Any], paths: Paths
     print(f"ai_provider_name: {config.get('ai_provider_name')}")
     print(f"ai_base_url: {config.get('ai_base_url')}")
     print(f"ai_model: {config.get('ai_model')}")
-    print(f"ai_api_key: {'已配置' if get_ai_api_key(config) else '未配置'}")
+    print(f"ai_api_key: {'已配置' if get_ai_api_key(config) else ('Mock' if is_mock_ai(config) else '未配置')}")
     print()
     print("=== Python 包 ===")
     for name in ["numpy", "soundcard", "websockets", "volcengine_audio"]:
@@ -269,6 +269,51 @@ def get_ai_api_key(config: dict[str, Any]) -> str:
     if env_name:
         return os.environ.get(env_name, "").strip()
     return ""
+
+
+def is_mock_ai(config: dict[str, Any]) -> bool:
+    provider = str(config.get("ai_provider") or "").strip().lower()
+    if provider == "mock":
+        return True
+    return str(config.get("ai_model") or "").strip().lower() == "mock"
+
+
+def is_ai_ready(config: dict[str, Any]) -> bool:
+    return is_mock_ai(config) or bool(get_ai_api_key(config))
+
+
+def stream_builtin_mock_ai_answer(question: str):
+    """Offline mock tokens — no HTTP, for --test-ai with ai_provider=mock."""
+    preview = question.strip()[:40] or "mock question"
+    tokens = [
+        "【Mock】",
+        preview,
+        " 的参考要点：",
+        "Redis",
+        " 缓存热点读；",
+        "MySQL",
+        " 索引优化查询路径；",
+        "二者互补。",
+    ]
+    for token in tokens:
+        time.sleep(0.02)
+        yield token
+
+
+def stream_mock_server_ai_answer(question: str, config: dict[str, Any]):
+    base_url = normalize_base_url(str(config.get("mock_base_url") or config.get("ai_base_url") or ""))
+    if not base_url:
+        raise RuntimeError("mock_base_url 未配置")
+    timeout = float(config.get("ai_timeout_seconds", 90))
+    payload = {"input": question.strip()}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    for event in iter_sse_json(f"{base_url}/mock/ai/responses", payload, headers, timeout):
+        delta = extract_ai_delta(event)
+        if delta:
+            yield delta
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -325,6 +370,14 @@ def extract_ai_delta(data: dict[str, Any]) -> str:
 
 
 def stream_ai_answer_api(question: str, config: dict[str, Any]):
+    if is_mock_ai(config):
+        mock_url = str(config.get("mock_base_url") or "").strip()
+        if mock_url:
+            yield from stream_mock_server_ai_answer(question, config)
+        else:
+            yield from stream_builtin_mock_ai_answer(question)
+        return
+
     api_key = get_ai_api_key(config)
     if not api_key:
         raise RuntimeError("AI API Key 未配置")
@@ -469,6 +522,7 @@ def ai_answer_worker(
     config: dict[str, Any],
     paths: Paths,
     logger: Logger,
+    status_tui: Any | None = None,
 ) -> None:
     logger.write(
         "AI参考答案已启用："
@@ -492,6 +546,8 @@ def ai_answer_worker(
             continue
 
         try:
+            if status_tui is not None:
+                status_tui.set_ai("生成中")
             logger.write("正在调用 AI 流式生成参考答案...")
             answer_file = start_ai_answer_stream_today(paths, config, question, source_label)
             delta_count = 0
@@ -500,8 +556,12 @@ def ai_answer_worker(
                 delta_count += 1
             finish_ai_answer_stream(answer_file)
             logger.write(f"AI参考答案已流式写入：{answer_file}，chunks={delta_count}")
+            if status_tui is not None:
+                status_tui.set_ai("待命")
         except Exception as exc:
             logger.write(f"AI参考答案生成失败：{exc!r}")
+            if status_tui is not None:
+                status_tui.set_ai("失败")
 
 
 def select_loopback_microphone(audio_device: str | None, logger: Logger):

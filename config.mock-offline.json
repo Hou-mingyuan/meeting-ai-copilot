@@ -1,0 +1,10 @@
+{
+  "output_dir_name": "实时监听",
+  "ai_provider": "mock",
+  "ai_provider_name": "Mock (built-in, zero HTTP)",
+  "ai_enabled": true,
+  "ai_model": "mock-glm",
+  "ai_api_key": "",
+  "ai_min_question_chars": 4,
+  "cloud_asr_enabled": false
+}

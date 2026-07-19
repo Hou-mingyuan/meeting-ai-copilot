@@ -76,7 +76,8 @@ copy config.example.json config.json
 meeting-ai-copilot/
 ├── src/
 │   ├── cloud_asr_volcengine.py   # 入口：ASR WebSocket + 调度
-│   └── cloud_runtime.py          # 音频采集、AI SSE、文件输出
+│   ├── cloud_runtime.py          # 音频采集、AI SSE、文件输出
+│   └── status_tui.py             # 终端状态面板（采集/ASR/AI）
 ├── config.example.json
 ├── requirements.txt
 ├── 启动云端实时转写和AI答案.bat
@@ -107,6 +108,38 @@ docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-
 ```
 
 零密钥完整演示链路请用 `.\scripts\demo-mock.ps1`（Mock ASR/AI，非 Docker 内）。
+
+<details>
+<summary><strong>Docker vs Windows 宿主机 — 如何选择？</strong></summary>
+
+| 你的目标 | 推荐方式 |
+| --- | --- |
+| CI / Portfolio 验收依赖与逻辑 | **Docker smoke**（`docker compose up …`） |
+| 真实会议听写 + WASAPI 系统声音 | **Windows 宿主机**（`.bat` 或 `python src/cloud_asr_volcengine.py`） |
+| 零密钥演示全链路 | **宿主机** + `.\scripts\demo-mock.ps1` |
+| BYOK 生产使用 | **Windows 宿主机** |
+
+| 能力 | Docker smoke | Windows 宿主机 |
+| --- | :---: | :---: |
+| 配置加载 / ASR 请求构造 | ✓ | ✓ |
+| 问题识别启发式 | ✓ | ✓ |
+| WASAPI 系统声音采集 | ✗ | ✓ |
+| 真实火山 ASR / LLM 流式 | ✗（需 BYOK + 宿主机） | ✓ |
+
+> Docker 在本项目中的可验收目标是镜像可构建、依赖可安装、`--smoke-test` 可跑通；**不**采集 Windows 系统声音——这是设计限制，不是部署失败。详见 [DEPLOYMENT.md §5](DEPLOYMENT.md#5-docker-诊断部署与演示边界)。
+
+</details>
+
+### 终端状态面板（TUI）
+
+交互式终端运行时默认显示 **4 行状态面板**（采集 / ASR 连接 / AI / 最近一句），可用 `--no-tui` 关闭：
+
+```powershell
+.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.json
+.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.json --no-tui
+```
+
+详细日志仍写入桌面 `运行日志.txt`。
 
 ## 演示指南
 
@@ -224,6 +257,19 @@ sequenceDiagram
 ```
 
 更多细节见 [USAGE.md](USAGE.md)。
+
+### Mock 演示录屏（pending-local）
+
+Windows 原生 GUI 演示需本机 OBS / Xbox Game Bar 录制约 **60s** Mock 流程（配置 smoke + 桌面输出文件滚动）。占位路径：`_optimization-screenshots/meeting-ai/demo-mock-60s.mp4`（待手动录制）。
+
+Locust 50 VU 本地热路径（无需密钥）：
+
+```powershell
+pip install locust
+locust -f loadtest\locustfile.py --headless -u 50 -r 10 -t 30s --only-summary
+```
+
+实测见 [PERFORMANCE_REPORT.md](PERFORMANCE_REPORT.md) §6。
 
 ## 版本
 

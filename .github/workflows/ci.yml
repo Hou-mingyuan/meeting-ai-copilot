@@ -32,13 +32,19 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir -r requirements.txt
+          python -m pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
 
       - name: Compile check
-        run: python -m py_compile src/cloud_runtime.py src/cloud_asr_volcengine.py
+        run: python -m py_compile src/cloud_runtime.py src/cloud_asr_volcengine.py src/transcript_question_fsm.py
+
+      - name: Pytest heuristic suite
+        run: python -m pytest tests/ -q
 
       - name: Smoke test (no API keys)
         run: python src/cloud_asr_volcengine.py --config config.example.json --smoke-test
+
+      - name: Mock AI test (builtin, zero key)
+        run: python src/cloud_asr_volcengine.py --config config.mock-offline.json --test-ai
 
       - name: Dependency audit
         run: pip audit --desc
@@ -83,6 +89,9 @@ jobs:
 
       - name: Python dry-run gate
         run: python loadtest/dry_run.py --base-url http://127.0.0.1:8765 --iterations 20 --concurrency 4
+
+      - name: Mock demo loop (zero key)
+        run: python scripts/demo_mock_loop.py --base-url http://127.0.0.1:8765
 
       - name: k6 smoke + burst (CI thresholds)
         env:

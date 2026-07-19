@@ -67,6 +67,17 @@ docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-
 
 预期输出包含 `SMOKE OK:` 三行。容器内**不**运行真实音频采集——这是**设计限制**，不是部署失败。
 
+**Round-6 本地实测（2026-07-06）**：
+
+```text
+SMOKE OK: config loaded
+SMOKE OK: ASR start request built
+SMOKE OK: AI question heuristic passed
+exit code 0
+```
+
+命令：`docker compose up --no-build --abort-on-container-exit --exit-code-from meeting-ai-copilot`
+
 ### 5.2 零密钥 Mock 演示（非 Docker 容器内）
 
 完整「会议→转写→AI 流式答案」闭环请用本地 Mock 服务（不消耗 API Key）：
@@ -133,7 +144,69 @@ GitHub Actions（`.github/workflows/ci.yml`）在每次 push/PR 执行：
 
 发布前在 Windows 宿主机做一次 `--diagnose` 与真实会议 smoke 验证。
 
-## 9. 相关文档
+## 9. Docker 化可行性评估（P3）
+
+> **评估日期**：2026-07-06（project-hub-1）
+> **结论**：**维持「Windows 宿主机生产 + Docker smoke 诊断」双轨**；不建议将完整实时转写链路迁入 Linux 容器。Docker 在本项目的可验收价值是 **CI/作品集依赖自检**，不是替代桌面运行时。
+
+### 9.1 核心约束
+
+| 约束 | 说明 | 对 Docker 化的影响 |
+| --- | --- | --- |
+| **WASAPI Loopback** | 采集 Windows 系统声音（腾讯会议等从扬声器播放），依赖 `sounddevice` + WinMM/WASAPI | Linux 容器**无**等价 API；WSL2 音频直通实验性且不稳定 |
+| **火山 ASR WebSocket** | 实时流式上行音频帧 | 容器内**可**发网，但无音频源则链路无意义 |
+| **桌面文件输出** | 默认 `桌面\实时监听\` 滚动写入 txt | 容器需卷挂载 + 路径映射，UX 不如本机 bat |
+| **CLI 交互模型** | 无 Web GUI；用户双击 bat 即跑 | 容器化不改善 UX，反而增加音频设备映射复杂度 |
+| **Hub Profile** | ai-portfolio 矩阵标 **Windows 原生 / N/A Docker 运行时** | verify-all **跳过**本项容器探测属预期 |
+
+### 9.2 方案对比矩阵
+
+| 方案 | 可行性 | 覆盖能力 | 成本 | 推荐场景 |
+| --- | :---: | --- | --- | --- |
+| **A. 现状：Docker smoke**（已实现） | ✅ 高 | 依赖安装、`--smoke-test`、问题启发式、CI badge | 低 | **Portfolio / GHA / Hub 矩阵 Docker 维度** |
+| **B. Windows 宿主机 BYOK**（已实现） | ✅ 高 | WASAPI + 真实 ASR + SSE AI + 文件输出 | 用户自备 Key | **生产 / 真实会议** |
+| **C. 本地 Mock**（`demo-mock.ps1`） | ✅ 高 | Mock ASR/AI HTTP，零密钥闭环 | 低 | **演示 / dry_run / k6** |
+| **D. Linux 全功能容器** | ❌ 低 | 无法采集系统声音；仅能跑 smoke 子集 | 中 | **不推荐**作为运行时目标 |
+| **E. WSL2 + PulseAudio 直通** | △ 实验 | 理论可采宿主音频，版本/驱动敏感 | 高 | **P3 文档记录即可**，非承诺支持 |
+| **F. Windows 容器（WCOW）** | △ 低 | WASAPI 在容器内仍受限；镜像体积大 | 很高 | **不纳入 Roadmap** |
+| **G. 拆分：Mock 服务容器 + 宿主机采集** | △ 中 | 容器跑 `mock_server.py`；采集仍在宿主机 | 中 | 可选：Hub 拉起 Mock 供 k6，**不**替代 bat |
+
+### 9.3 决策表（按场景选型）
+
+| 你的目标 | 推荐形态 | 命令 / 入口 | 需要 Key |
+| --- | --- | --- | --- |
+| CI 绿 / 作品集 Docker 维度验收 | **Docker smoke** | `docker compose up --build --abort-on-container-exit` | 否 |
+| 本地零密钥演示转写→AI 链路 | **Mock 宿主机** | `.\scripts\demo-mock.ps1` | 否 |
+| 真实开会听写 + AI 参考答案 | **Windows 宿主机 BYOK** | `启动云端实时转写和AI答案.bat` | 是（火山 ASR + AI） |
+| 压测 / 性能基线 | **Mock + dry_run/k6** | `loadtest\dry_run.py` / `loadtest\k6-smoke.js` | 否 |
+| Hub 统一编排一键体验 | **不适用** | Hub 无 meeting Profile（设计如此） | — |
+| 未来 GUI / 托盘状态 | **宿主机 TUI/托盘**（Roadmap） | 仍依赖 WASAPI，与 Docker 正交 | — |
+
+```mermaid
+flowchart TD
+    Q{目标是什么?}
+    Q -->|CI/依赖验收| D[Docker smoke]
+    Q -->|零密钥演示| M[demo-mock.ps1]
+    Q -->|真实会议转写| W[Windows 宿主机 BYOK]
+    Q -->|压测基线| K[Mock + k6/dry_run]
+    D --> OK1[SMOKE OK 三行]
+    M --> OK2[MOCK DEMO OK]
+    W --> OK3[桌面实时监听 txt]
+```
+
+### 9.4 评估结论与 Roadmap
+
+| 决策项 | 结论 |
+| --- | --- |
+| **是否追求 Linux 全功能容器？** | **否** — WASAPI 是产品核心依赖，迁容器收益为负 |
+| **Docker 在本项目的定位** | **诊断 smoke + CI**，与 [PRODUCTION-READINESS](../../ai-portfolio/PRODUCTION-READINESS.md) Docker 维 ✓ 对齐 |
+| **短期（P2）** | README/DEPLOYMENT 决策表上提（本节即交付）；可选 WSL2 实验说明一句带过 |
+| **中期（P3）** | 最小托盘/TUI 显示 ASR+AI 状态（**宿主机**，非容器） |
+| **长期（P3+）** | PyInstaller exe 打包；Mock 服务可选独立 Hub sidecar（仅 k6，不采音频） |
+
+**维护者备忘**：若收到「为什么 Hub verify-all 不检 meeting」类 Issue，指向本节 §9.3 与 ai-portfolio `DOCKER-DESKTOP.md` — meeting 为 **Windows 原生**，Docker smoke 在**子项目 CI** 验收即可。
+
+## 10. 相关文档
 
 - [README.md](README.md) — 架构与快速开始
 - [USAGE.md](USAGE.md) — 详细使用说明
