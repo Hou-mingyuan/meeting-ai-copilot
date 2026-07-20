@@ -2,17 +2,20 @@
  * meeting-ai-copilot P0 smoke / load dry-run（对接 mock_server.py，不调用火山 API）
  *
  * 运行：
- *   python loadtest/mock_server.py --port 8765
+ *   python loadtest/mock_server.py --port 19060
  *   k6 run loadtest/k6_smoke.js
  *
  * 环境变量：
- *   MOCK_BASE_URL  默认 http://127.0.0.1:8765
+ *   MOCK_BASE_URL  默认 http://127.0.0.1:19060
  */
 import http from 'k6/http';
 import { check, sleep } from 'k6';
+import encoding from 'k6/encoding';
 import { Trend } from 'k6/metrics';
 
-const BASE_URL = __ENV.MOCK_BASE_URL || 'http://127.0.0.1:8765';
+const BASE_URL = __ENV.MOCK_BASE_URL || 'http://127.0.0.1:19060';
+const FIXTURE_WAV = open('../tests/fixtures/meeting_question.wav', 'b');
+const FIXTURE_WAV_B64 = encoding.b64encode(FIXTURE_WAV);
 
 const asrLatency = new Trend('asr_chunk_latency_ms', true);
 const aiTtfb = new Trend('ai_sse_ttfb_ms', true);
@@ -58,11 +61,8 @@ export function smokeFlow() {
   const health = http.get(`${BASE_URL}/health`, { tags: { endpoint: 'health' } });
   check(health, { 'health 200': (r) => r.status === 200 });
 
-  const asrPayload = JSON.stringify({
-    seq: Math.floor(Math.random() * 8),
-    text_hint: 'Can you explain thread pool sizing in Spring Boot?',
-  });
-  const asr = http.post(`${BASE_URL}/mock/asr/chunk`, asrPayload, {
+  const asrPayload = JSON.stringify({ wav_b64: FIXTURE_WAV_B64 });
+  const asr = http.post(`${BASE_URL}/mock/asr/fixture`, asrPayload, {
     headers: { 'Content-Type': 'application/json' },
     tags: { endpoint: 'asr' },
   });

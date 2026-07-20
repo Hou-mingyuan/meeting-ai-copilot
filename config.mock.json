@@ -1,15 +1,15 @@
-# 零密钥 Mock 演示配置（cloud_asr_provider / ai_provider = mock）
-# 需先启动: python loadtest/mock_server.py --port 8765
 {
   "output_dir_name": "实时监听",
   "cloud_asr_provider": "mock",
-  "mock_base_url": "http://127.0.0.1:8765",
+  "mock_base_url": "http://127.0.0.1:19060",
   "ai_provider": "mock",
-  "ai_provider_name": "Mock (local HTTP)",
+  "ai_provider_name": "Mock (deterministic built-in)",
   "ai_enabled": true,
   "cloud_asr_enabled": true,
   "cloud_asr_api_key": "",
   "ai_api_key": "",
   "ai_model": "mock-glm",
-  "ai_min_question_chars": 4
+  "ai_min_question_chars": 4,
+  "mock_fixture": "tests/fixtures/meeting_question.wav",
+  "mock_notice": "主 CLI 使用内置确定性 Mock；mock_base_url 仅供 HTTP 协议脚本使用"
 }

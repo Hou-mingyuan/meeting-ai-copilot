@@ -22,7 +22,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from cloud_runtime import is_question_like, load_config  # noqa: E402
 
-
 CONFIG = load_config(ROOT / "config.example.json")
 QUESTIONS = [
     "请介绍一下你在 Spring Boot 项目里如何做 MySQL 索引优化？",

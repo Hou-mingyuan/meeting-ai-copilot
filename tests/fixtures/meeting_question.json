@@ -1,0 +1,10 @@
+{
+  "fixture": "meeting_question.wav",
+  "format": "PCM16 mono WAV",
+  "sample_rate": 16000,
+  "duration_seconds": 3.0,
+  "wav_sha256": "1ab7096bc74878e3392f91a724947263fa52b15e9edfcf113216b698c365e0d7",
+  "pcm_sha256": "11654807346dfdd5eb0eeb9d2fefee00f6fa34c952b13a8528f69976c3c28c3c",
+  "expected_final": "请解释一下 Redis 缓存和 MySQL 索引分别解决什么问题？",
+  "note": "Synthetic deterministic fixture for Mock ASR and Windows loopback capture tests; it is not real speech."
+}

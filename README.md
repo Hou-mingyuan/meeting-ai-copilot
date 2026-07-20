@@ -1,280 +1,152 @@
 # meeting-ai-copilot
 
-> **会议实时 ASR + LLM 流式答案助手** — 监听 Windows 系统声音，云端实时转写会议语音，识别到问题后流式生成 AI 参考答案。
+Windows 会议实时转写与 AI 参考答案工具。用户明确确认后，可采集系统声音、麦克风或混合输入，通过火山引擎流式 ASR 显示分句转写，并对自动检测或手动编辑的问题生成流式 AI 参考答案。
 
-<p>
-  <img alt="CI" src="https://github.com/Hou-mingyuan/meeting-ai-copilot/actions/workflows/ci.yml/badge.svg">
-  <img alt="python" src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white">
-  <img alt="platform" src="https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white">
-  <img alt="asr" src="https://img.shields.io/badge/ASR-Volcengine%20Streaming-orange">
-  <img alt="llm" src="https://img.shields.io/badge/LLM-SSE%20Streaming-blue">
-  <img alt="license" src="https://img.shields.io/badge/License-MIT-green">
-</p>
+> 当前版本：`1.1.0-rc.1`。真实 ASR/AI 采用 BYOK；仓库不包含密钥。Mock 模式显著标记为固定音频和本地替身，不代表真实模型效果。
 
----
+![Windows TUI Mock 演示](docs/images/tui-mock.png)
 
-## 核心能力
+[60 秒固定音频 Mock 演示录屏](docs/media/mock-demo-60s.mp4)
 
-| 模块 | 说明 |
+## 先体验：零密钥一键闭环
+
+Windows 双击：
+
+```text
+一键Mock演示.bat
+```
+
+或运行：
+
+```powershell
+python src\cloud_asr_volcengine.py --mock-demo
+```
+
+该流程读取仓库固定 WAV `tests/fixtures/meeting_question.wav`，依次验证：
+
+```text
+固定音频 -> Mock ASR partial/final -> 一次断线恢复 -> 问题检测
+         -> Mock AI 取消与重试 -> JSON 会话 -> Markdown/TXT 导出
+```
+
+通过时输出 `MOCK ACCEPTANCE PASSED`。固定数据的 SHA-256 与期望 final 文本记录在同目录 JSON；重复运行可比较，不需要会议正在播放，也不调用外部服务。
+
+## 真实会议
+
+1. 复制 `config.example.json` 为 `config.json`。
+2. 优先设置环境变量 `VOLC_ASR_API_KEY`、`VOLCENGINE_CODING_PLAN_API_KEY`，也可只在本机 `config.json` 填入。
+3. 双击 `启动云端实时转写和AI答案.bat`，选择“开始真实会议采集”。
+4. 程序先显示采集范围、ASR/AI 数据去向和本地目录；只有输入 `Y` 才打开音频设备。
+
+启动菜单支持：Mock 演示、真实会议、设备诊断、设备列表。没有 Python 时可使用构建出的 Windows 便携包。
+
+## 输入与交互
+
+| 能力 | 行为 |
 | --- | --- |
-| **实时 ASR** | 火山引擎大模型流式语音识别（WebSocket 双向流），100ms 音频块低延迟上送，partial + final 分句输出 |
-| **LLM 流式答案** | 识别到面试/问答类语句后，通过 HTTP SSE 流式调用大模型，逐 token 写入桌面文件 |
-| **系统声音采集** | WASAPI Loopback 自动检测当前有声音的输出设备，默认不采集麦克风 |
-| **热词优化** | 支持内联热词或火山控制台词表（`boosting_table_id`），提升专业术语识别率 |
-| ** resilient 运行** | 断线自动重连、跨天自动切换日期文件、问题去重与冷却防重复调用 |
+| 系统声音 | WASAPI loopback，支持稳定设备 ID 与名称选择 |
+| 麦克风 | 独立采集，单声道 16 kHz 归一化 |
+| 混合 | 系统声音与麦克风分别采集后混合，任一路短暂失效时继续处理可用输入 |
+| 热切换 | TUI 按 `1`/`2`/`3` 切换输入模式，按 `D` 输入稳定设备 ID/名称；设备消失时自动重开 |
+| 背压 | 有界缓冲区满时丢弃最旧块，优先保持实时性并记录计数 |
+| 暂停/恢复 | `Space`；暂停时不向 ASR 发送新音频，恢复后清理陈旧缓冲 |
+| 手动问题 | `A` 回答最近一句；`E` 编辑后提交 |
+| AI 控制 | `C` 取消、`R` 重试、`T` 开关自动回答 |
+| 保存/导出 | `X` 导出；停止时自动保存 JSON 并导出 Markdown/TXT |
+| 停止 | `Q` 或 `Ctrl+C`；等待音频、AI、TUI 线程关闭 |
 
-## 数据流
+TUI 在 40、60、100、140 列宽下有固定 10 行布局测试，实时转写与 AI 参考答案分行显示；长设备名和中文长文本会截断，不产生横向溢出。
+
+## 可靠性边界
+
+- ASR 处理 partial/final、乱序 partial、重复 final、心跳、连接超时、指数退避和最多 6 次连续重连。
+- 鉴权失败不重试；429 与暂时性网络/5xx 错误按上限重试。
+- 未确认音频保留在有界重放缓冲；重连后重放。已确认 final 在断线前立即落盘，不因重连删除。
+- AI SSE 必须收到完成事件；提前断线按上限重试，并去除已输出前缀，避免重复答案。
+- AI 有总超时、流空闲超时、最大答案字符数和取消令牌；答案始终标记为“AI 参考答案（非会议原话）”。
+- 每次运行创建独立 `session_id`，上下文最多 4000 字，不跨会话复用。
+
+## 本地数据
+
+默认目录：`桌面\实时监听\`。
+
+| 文件 | 说明 |
+| --- | --- |
+| `session-<id>.json` | 结构化会话、来源、时间戳、问题、答案状态、隐私确认与状态事件 |
+| `session-<id>.md/.txt` | 人工可读导出，AI 与会议原话分区 |
+| `YYYY-MM-DD_实时监听.txt` | 兼容版 final 转写 |
+| `YYYY-MM-DD_临时识别.txt` | 当前 partial，覆盖写 |
+| `YYYY-MM-DD_AI参考答案.txt` | 兼容版流式 AI 输出 |
+| `YYYY-MM-DD_运行日志.txt` | 运行状态；不记录 API Key，不写完整转写正文 |
+
+默认保留 30 天，只清理应用拥有的 `session-*` 文件。可用 `output_directory` 和 `session_retention_days` 修改。
+
+## 架构
 
 ```mermaid
 flowchart LR
-    subgraph Input["输入"]
-        Meet[会议软件播放声音]
-    end
-    subgraph Capture["采集"]
-        Loop[WASAPI Loopback]
-    end
-    subgraph ASR["实时 ASR"]
-        WS[火山 WebSocket 流式识别]
-    end
-    subgraph Output["输出"]
-        TXT[桌面 txt 转写文件]
-        AI[LLM SSE 流式答案]
-    end
-
-    Meet --> Loop --> WS --> TXT
-    WS -->|识别到问题| AI
+    A[系统声音 / 麦克风 / 混合] --> B[AudioSource + 归一化 + 背压]
+    B --> C[ASR Provider]
+    C --> D[分句协调器 + 去重 + 会话存储]
+    D --> E[自动/手动问题检测]
+    E --> F[LLM Provider + SSE 取消/重试]
+    D --> G[Windows TUI]
+    F --> G
+    D --> H[JSON / Markdown / TXT]
 ```
 
-## 快速开始
+稳定契约位于 `src/app_contracts.py`；音频、ASR 恢复、问题检测、LLM、会话存储分别位于独立模块。详见 [架构文档](docs/ARCHITECTURE.md)。
+
+## 验收
+
+完整 Windows 本地验收：
 
 ```powershell
-git clone https://github.com/Hou-mingyuan/meeting-ai-copilot.git
-cd meeting-ai-copilot
-copy config.example.json config.json
-# 编辑 config.json 填入 cloud_asr_api_key 与 ai_api_key
-启动云端实时转写和AI答案.bat
+.\一键验收.bat --no-pause
 ```
 
-详细步骤见 [USAGE.md](USAGE.md)。部署运维见 [DEPLOYMENT.md](DEPLOYMENT.md)，安全策略见 [SECURITY.md](SECURITY.md)。
-
-## 配置
-
-复制 `config.example.json` 为 `config.json`，填入密钥：
-
-```json
-{
-  "cloud_asr_api_key": "your-volcengine-asr-key",
-  "ai_api_key": "your-volcengine-coding-plan-key"
-}
-```
-
-也支持环境变量：`VOLC_ASR_API_KEY`、`VOLCENGINE_CODING_PLAN_API_KEY`。
-
-## 项目结构
-
-```
-meeting-ai-copilot/
-├── src/
-│   ├── cloud_asr_volcengine.py   # 入口：ASR WebSocket + 调度
-│   ├── cloud_runtime.py          # 音频采集、AI SSE、文件输出
-│   └── status_tui.py             # 终端状态面板（采集/ASR/AI）
-├── config.example.json
-├── requirements.txt
-├── 启动云端实时转写和AI答案.bat
-├── README.md
-├── USAGE.md
-├── DEPLOYMENT.md
-├── SECURITY.md
-├── CHANGELOG.md
-└── VERSION
-```
-
-## 诊断与测试
+或按范围运行：
 
 ```powershell
-python -m py_compile src\cloud_runtime.py src\cloud_asr_volcengine.py
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.example.json --smoke-test
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --diagnose
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --test-asr-handshake
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --test-ai
+python -m ruff check src tests scripts loadtest
+python -m pytest tests -q
+python scripts\repo_checks.py
+python src\cloud_asr_volcengine.py --windows-audio-acceptance
+docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-copilot
+powershell -File scripts\build-portable.ps1
 ```
 
-### Docker Desktop smoke（CI / 依赖验收）
+Mock HTTP 服务只允许绑定本机 `19060-19069`；默认端口 `19060`。端口范围外会直接退出非零。
 
-Docker 容器用于验证依赖安装、配置加载、ASR 请求构造和问题识别逻辑；**不**采集 Windows 系统声音（见 [DEPLOYMENT.md §5](DEPLOYMENT.md#5-docker-诊断部署与演示边界) 能力对照表）。Portfolio Hub 将本项目标记为 Windows 原生，Docker smoke 即该维度的可验收基线。
+本机 Windows 实采已用同一固定 WAV 验证 Realtek loopback 主频、麦克风打开、混合输入、暂停/恢复、Realtek 与 ToDesk 热切换、停止和零残留音频线程。真实指标、命令和边界见 [验收记录](docs/ACCEPTANCE.md) 与 [性能报告](PERFORMANCE_REPORT.md)。
+
+## Docker 边界
+
+Docker 只验证 Linux 镜像依赖、配置、ASR 请求构造和问题检测：
 
 ```powershell
 docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-copilot
 ```
 
-零密钥完整演示链路请用 `.\scripts\demo-mock.ps1`（Mock ASR/AI，非 Docker 内）。
+容器不能证明 Windows WASAPI 采音。Windows 真实设备验收必须运行 `--windows-audio-acceptance`，两类证据在文档中分开记录。
 
-<details>
-<summary><strong>Docker vs Windows 宿主机 — 如何选择？</strong></summary>
-
-| 你的目标 | 推荐方式 |
-| --- | --- |
-| CI / Portfolio 验收依赖与逻辑 | **Docker smoke**（`docker compose up …`） |
-| 真实会议听写 + WASAPI 系统声音 | **Windows 宿主机**（`.bat` 或 `python src/cloud_asr_volcengine.py`） |
-| 零密钥演示全链路 | **宿主机** + `.\scripts\demo-mock.ps1` |
-| BYOK 生产使用 | **Windows 宿主机** |
-
-| 能力 | Docker smoke | Windows 宿主机 |
-| --- | :---: | :---: |
-| 配置加载 / ASR 请求构造 | ✓ | ✓ |
-| 问题识别启发式 | ✓ | ✓ |
-| WASAPI 系统声音采集 | ✗ | ✓ |
-| 真实火山 ASR / LLM 流式 | ✗（需 BYOK + 宿主机） | ✓ |
-
-> Docker 在本项目中的可验收目标是镜像可构建、依赖可安装、`--smoke-test` 可跑通；**不**采集 Windows 系统声音——这是设计限制，不是部署失败。详见 [DEPLOYMENT.md §5](DEPLOYMENT.md#5-docker-诊断部署与演示边界)。
-
-</details>
-
-### 终端状态面板（TUI）
-
-交互式终端运行时默认显示 **4 行状态面板**（采集 / ASR 连接 / AI / 最近一句），可用 `--no-tui` 关闭：
+## 便携包
 
 ```powershell
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.json
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.json --no-tui
+powershell -File scripts\build-portable.ps1
+powershell -File scripts\test-portable.ps1 -ZipPath dist\meeting-ai-copilot-1.1.0-rc.1-win-x64.zip
 ```
 
-详细日志仍写入桌面 `运行日志.txt`。
+便携 ZIP 包含运行时，不依赖系统 Python。clean-profile smoke 会在带空格的临时路径、独立 `USERPROFILE` 下运行 EXE 版本、smoke、Mock 会话和一键启动脚本。当前 EXE 未签名，也未发布。详见 [便携版说明](便携版说明.md)。
 
-## 演示指南
+## 文档
 
-面向作品集评审与首次体验。**本项目不提供内置演示账号**，采用 BYOK（Bring Your Own Key）模式：自备火山引擎 ASR Key 与 Coding Plan AI Key 后，按下列顺序完成配置、验收与核心流程演示。
+- [使用指南](USAGE.md)
+- [部署与故障排查](DEPLOYMENT.md)
+- [安全与隐私](SECURITY.md)
+- [架构](docs/ARCHITECTURE.md)
+- [验收证据与已知限制](docs/ACCEPTANCE.md)
+- [性能报告](PERFORMANCE_REPORT.md)
+- [变更记录](CHANGELOG.md)
 
-### 零密钥 Mock 演示（`ai_provider=mock` · 无需火山 Key）
-
-| 步骤 | 命令 / 操作 | 预期 |
-| --- | --- | --- |
-| ✓ | `python src/cloud_asr_volcengine.py --config config.example.json --smoke-test` | 三行 `SMOKE OK:` |
-| ✓ | `python src/cloud_asr_volcengine.py --config config.mock-offline.json --test-ai` | 内置 Mock 流式答案，无需 HTTP |
-| ✓ | `.\scripts\demo-mock.ps1` | `MOCK DEMO OK`（ASR+AI 全链路 Mock 服务） |
-| ✓ | `docker compose up …` | 容器 smoke，同上三行 OK |
-
-**一键 Mock 闭环（PowerShell）：**
-
-```powershell
-.\scripts\demo-mock.ps1
-```
-
-或手动两步：
-
-```powershell
-python loadtest\mock_server.py --port 8765          # 终端 1
-python scripts\demo_mock_loop.py --base-url http://127.0.0.1:8765   # 终端 2
-```
-
-预期末尾输出 `MOCK DEMO OK（未调用火山 ASR/LLM API）`。Mock 不采集 Windows 系统声音；真实会议请走 BYOK 路径。
-
-### 演示账号说明
-
-| 项目 | 说明 |
-| --- | --- |
-| 内置演示账号 | **无** — 不向仓库写入任何共享 Key |
-| 体验方式 | 复制 `config.example.json` → 填入自有密钥，或设置环境变量 |
-| 无 Key 时可验收 | `--smoke-test`、`--test-ai`（`config.mock-offline.json`）、`scripts/demo-mock.ps1`、Docker smoke |
-
-### BYOK 配置
-
-1. 复制 `config.example.json` 为 `config.json`
-2. 填入火山引擎凭证（Bring Your Own Key）：
-
-| 字段 | 环境变量（可选） | 说明 |
-| --- | --- | --- |
-| `cloud_asr_api_key` | `VOLC_ASR_API_KEY` | 实时语音识别 API Key |
-| `ai_api_key` | `VOLCENGINE_CODING_PLAN_API_KEY` | LLM 参考答案 API Key |
-| `cloud_asr_boosting_table_id` | — | 可选，控制台热词表 ID |
-
-> 切勿将含真实 Key 的 `config.json` 提交到 Git。详见 [SECURITY.md](SECURITY.md)。
-
-### smoke-test 与 diagnose
-
-**无密钥验收**（CI / 首次克隆后）：
-
-```powershell
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.example.json --smoke-test
-```
-
-预期输出包含三行 `SMOKE OK:` 并以 exit code 0 退出：
-
-```text
-SMOKE OK: config loaded
-SMOKE OK: ASR start request built
-SMOKE OK: AI question heuristic passed
-```
-
-**填入 BYOK 后**（Windows 宿主机，正式开会前）：
-
-```powershell
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.json --diagnose
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --test-asr-handshake
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --test-ai
-```
-
-| 命令 | 用途 | 通过标准 |
-| --- | --- | --- |
-| `--smoke-test` | 配置加载、ASR 请求构造、问题识别逻辑 | 三行 `SMOKE OK:`，exit 0 |
-| `--diagnose` | 环境、依赖包、音频 loopback 设备、Key 是否已配置 | `api_key: 已配置`，依赖包均为 `OK` |
-| `--test-asr-handshake` | ASR WebSocket 握手 | 无报错退出 |
-| `--test-ai` | LLM SSE 通道 | 流式返回 token |
-
-### Docker smoke
-
-在无 Windows 音频环境或 CI 中，用容器验证依赖安装、配置加载与问题识别逻辑：
-
-```powershell
-docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-copilot
-```
-
-预期容器日志同样输出三行 `SMOKE OK:` 并以 code 0 退出。
-
-> 容器不采集系统声音；完整演示仍需在 Windows 宿主机运行 `启动云端实时转写和AI答案.bat`。
-
-### 核心流程：会议 → 转写 → AI
-
-1. **启动**：运行 `启动云端实时转写和AI答案.bat`（自动创建 `.venv` 并安装依赖）
-2. **会议**：打开腾讯会议等，确保声音从扬声器/耳机播放（默认不采集麦克风）
-3. **转写**：WASAPI Loopback 采集 → 火山 WebSocket 流式 ASR → 写入桌面 `实时监听\YYYY-MM-DD_实时监听.txt`
-4. **AI 答案**：识别到面试/问答语句后，SSE 流式调用大模型 → 写入 `YYYY-MM-DD_AI参考答案.txt`
-
-```mermaid
-sequenceDiagram
-    participant Meet as 会议软件
-    participant App as meeting-ai-copilot
-    participant ASR as 火山 ASR
-    participant LLM as 大模型 SSE
-
-    Meet->>App: 系统声音 (WASAPI Loopback)
-    App->>ASR: 100ms 音频块 WebSocket
-    ASR-->>App: partial / final 转写
-    App->>App: 写入桌面 txt
-    App->>LLM: 识别到问题 → SSE 流式请求
-    LLM-->>App: token 流
-    App->>App: 写入 AI参考答案.txt
-```
-
-更多细节见 [USAGE.md](USAGE.md)。
-
-### Mock 演示录屏（pending-local）
-
-Windows 原生 GUI 演示需本机 OBS / Xbox Game Bar 录制约 **60s** Mock 流程（配置 smoke + 桌面输出文件滚动）。占位路径：`_optimization-screenshots/meeting-ai/demo-mock-60s.mp4`（待手动录制）。
-
-Locust 50 VU 本地热路径（无需密钥）：
-
-```powershell
-pip install locust
-locust -f loadtest\locustfile.py --headless -u 50 -r 10 -t 30s --only-summary
-```
-
-实测见 [PERFORMANCE_REPORT.md](PERFORMANCE_REPORT.md) §6。
-
-## 版本
-
-当前版本：**1.0.0**（见 [VERSION](VERSION) 与 [CHANGELOG.md](CHANGELOG.md)）
-
-## 许可证
-
-[MIT License](LICENSE)
+许可证：[MIT](LICENSE)。

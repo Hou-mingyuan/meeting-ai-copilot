@@ -3,18 +3,25 @@
 无 k6 时的 dry-run 压测脚本（Python 标准库，mock ASR/AI）
 
 用法：
-  python loadtest/mock_server.py --port 8765   # 终端 1
-  python loadtest/dry_run.py --base-url http://127.0.0.1:8765   # 终端 2
+  python loadtest/mock_server.py --port 19060   # 终端 1
+  python loadtest/dry_run.py --base-url http://127.0.0.1:19060   # 终端 2
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import statistics
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+FIXTURE_WAV_B64 = base64.b64encode(
+    (PROJECT_ROOT / "tests" / "fixtures" / "meeting_question.wav").read_bytes()
+).decode("ascii")
 
 
 def request_json(url: str, payload: dict | None = None, timeout: float = 10.0) -> tuple[float, dict]:
@@ -54,10 +61,7 @@ def request_sse(url: str, payload: dict, timeout: float = 10.0) -> tuple[float, 
 
 def one_iteration(base: str) -> dict[str, float]:
     health_ms, _ = request_json(f"{base}/health")
-    asr_ms, asr_body = request_json(
-        f"{base}/mock/asr/chunk",
-        {"seq": 3, "text_hint": "请说明 MySQL 事务隔离级别？"},
-    )
+    asr_ms, asr_body = request_json(f"{base}/mock/asr/fixture", {"wav_b64": FIXTURE_WAV_B64})
     ai_ttfb, ai_total, ai_deltas = request_sse(
         f"{base}/mock/ai/responses",
         {"input": "Explain CAP theorem briefly."},
@@ -82,7 +86,7 @@ def percentile(values: list[float], pct: float) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="meeting-ai-copilot mock dry-run")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8765")
+    parser.add_argument("--base-url", default="http://127.0.0.1:19060")
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--concurrency", type=int, default=4)
     args = parser.parse_args()

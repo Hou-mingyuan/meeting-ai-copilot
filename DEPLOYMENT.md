@@ -1,213 +1,134 @@
-# meeting-ai-copilot 部署与运维指南
+# 部署、打包与故障排查
 
-本文档面向**最终用户部署**与**维护者运维**。本工具是 Windows 桌面端实时转写助手，不是多租户 Web 服务；生产使用即在用户 PC 上长期运行。
+## 支持环境
 
-## 1. 部署形态
+| 项目 | 要求 |
+| --- | --- |
+| 生产运行 | Windows 10/11 x64，真实 WASAPI 音频设备 |
+| 源码运行 | Python 3.10-3.12，建议 3.12；约 500MB 可用磁盘 |
+| 便携包 | Windows 10/11 x64；不要求系统 Python；约 150MB 解压空间 |
+| Docker smoke | Docker Desktop / Linux Docker；不支持 Windows 真实采音 |
+| 网络 | BYOK 模式需要访问配置的 ASR WebSocket 与 AI HTTPS/SSE 地址 |
 
-| 形态 | 用途 | 说明 |
-| --- | --- | --- |
-| **Windows 宿主机（推荐）** | 真实会议转写 | 双击 `启动云端实时转写和AI答案.bat`，采集 WASAPI Loopback |
-| **Docker smoke** | CI / 依赖自检 | 仅验证配置加载与问题识别逻辑，**不能**采集 Windows 系统声音 |
+本项目是单用户 Windows 工具，不是 Web 服务，不需要数据库、账号或浏览器入口。
 
-## 2. 前置条件
+## 推荐启动路径
 
-- Windows 10/11，Python 3.10+（启动脚本会自动创建 `.venv`）
-- 火山引擎账号：实时 ASR Key + Coding Plan AI Key
-- 会议软件（如腾讯会议）声音从电脑扬声器/耳机播放
+源码仓库双击：
 
-## 3. 首次部署（Windows）
-
-```powershell
-git clone https://github.com/Hou-mingyuan/meeting-ai-copilot.git
-cd meeting-ai-copilot
-copy config.example.json config.json
-# 编辑 config.json 填入 cloud_asr_api_key 与 ai_api_key
+```text
 启动云端实时转写和AI答案.bat
 ```
 
-或使用环境变量（适合不想在磁盘留 Key 的场景）：
+脚本显示可见菜单，不静默启动。首次源码运行会创建 `.venv`；缺少 Python 时先征求确认，再决定是否通过 winget 安装。便携包会优先使用包内 EXE。
+
+零密钥默认路径：选择 Mock 演示。真实会议路径：创建 `config.json`、配置 BYOK、确认隐私后开始。
+
+## 配置与密钥
+
+环境变量优先于 `config.json`：
 
 ```powershell
-$env:VOLC_ASR_API_KEY = "your-asr-key"
-$env:VOLCENGINE_CODING_PLAN_API_KEY = "your-ai-key"
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.json
+$env:VOLC_ASR_API_KEY = "..."
+$env:VOLCENGINE_CODING_PLAN_API_KEY = "..."
 ```
 
-详细配置项见 [USAGE.md](USAGE.md)。
+应用不会把 Key 写入日志或会话。`config.json` 只适合个人本机，并已被 Git 忽略。
 
-## 4. 输出与日志
+## 本地 Mock 与端口
 
-默认输出目录：`桌面\实时监听\`
+离线 Mock 不启动服务：
 
-| 文件 | 说明 |
-| --- | --- |
-| `YYYY-MM-DD_实时监听.txt` | 最终 ASR 结果 |
-| `YYYY-MM-DD_临时识别.txt` | partial 临时结果 |
-| `YYYY-MM-DD_AI参考答案.txt` | AI 流式答案 |
-| `YYYY-MM-DD_运行日志.txt` | 运行日志（排障首选） |
+```powershell
+python src\cloud_asr_volcengine.py --mock-demo
+```
 
-跨天自动切换日期文件；断网 ASR 会自动重连。
+HTTP 协议与性能测试使用：
 
-## 5. Docker 诊断部署与演示边界
+```powershell
+python loadtest\mock_server.py --port 19060
+python scripts\demo_mock_loop.py --base-url http://127.0.0.1:19060
+python loadtest\dry_run.py --base-url http://127.0.0.1:19060
+```
 
-### 5.1 验收范围（Portfolio / CI）
+Mock 服务只绑定 loopback，并强制使用 `19060-19069`。端口范围外启动失败。服务请求校验固定 WAV/PCM 哈希，不接受调用者传入任意“期望文本”冒充 ASR。
 
-Docker 在本项目中的**可验收目标**是：镜像可构建、依赖可安装、`--smoke-test` 与问题识别逻辑可跑通。这与 Hub Profile「meeting-ai-copilot 无容器、Windows 原生」的定位一致。
+## Windows 主机音频验收
 
-| 能力 | Docker smoke | Windows 宿主机 |
-| --- | --- | --- |
-| 配置加载 / ASR 请求构造 | ✓ | ✓ |
-| 问题识别启发式 | ✓ | ✓ |
-| WASAPI 系统声音采集 | ✗ | ✓ |
-| 真实火山 ASR/LLM 流式 | ✗（需 BYOK + 宿主机） | ✓ |
+```powershell
+python src\cloud_asr_volcengine.py --windows-audio-acceptance
+```
+
+命令会：
+
+1. 枚举 loopback 与麦克风。
+2. 播放固定 WAV，用真实 WASAPI loopback 捕获并检查 330/440Hz 测试音。
+3. 实际打开麦克风和混合输入。
+4. 验证暂停/恢复、两个输出设备之间热切换、显式停止和残留线程。
+
+该命令不连接 Docker，不调用云端 ASR/AI。远程桌面、无声卡或禁用麦克风权限的主机会如实失败。
+
+## Docker smoke
 
 ```powershell
 docker compose up --build --abort-on-container-exit --exit-code-from meeting-ai-copilot
 ```
 
-预期输出包含 `SMOKE OK:` 三行。容器内**不**运行真实音频采集——这是**设计限制**，不是部署失败。
+Docker 只证明：镜像构建、依赖安装、配置加载、火山 ASR 请求构造、问题检测。Linux 容器没有 Windows WASAPI，因此不能替代上一节的主机证据。
 
-**Round-6 本地实测（2026-07-06）**：
-
-```text
-SMOKE OK: config loaded
-SMOKE OK: ASR start request built
-SMOKE OK: AI question heuristic passed
-exit code 0
-```
-
-命令：`docker compose up --no-build --abort-on-container-exit --exit-code-from meeting-ai-copilot`
-
-### 5.2 零密钥 Mock 演示（非 Docker 容器内）
-
-完整「会议→转写→AI 流式答案」闭环请用本地 Mock 服务（不消耗 API Key）：
+## 便携包构建
 
 ```powershell
-.\scripts\demo-mock.ps1
-# 或: python loadtest\mock_server.py --port 8765
-#     python loadtest\dry_run.py --base-url http://127.0.0.1:8765
+python -m pip install -r requirements.txt -r requirements-dev.txt -r requirements-build.txt
+powershell -File scripts\build-portable.ps1
 ```
 
-详见 README「零密钥 Mock 演示」与 `config.mock.json`。
+输出：`dist\meeting-ai-copilot-<version>-win-x64.zip`。构建脚本先运行测试，再使用 PyInstaller one-folder 模式，复制配置、文档和固定 fixture，最后用 Windows `tar.exe -a` 生成 ZIP 与 SHA-256。
 
-## 6. 升级流程
+clean-profile smoke：
 
 ```powershell
-git pull
-# 若 requirements.txt 有变更，重新运行启动脚本或：
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-python -m py_compile src\cloud_runtime.py src\cloud_asr_volcengine.py
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --config config.example.json --smoke-test
+powershell -File scripts\test-portable.ps1 -ZipPath dist\meeting-ai-copilot-1.1.0-rc.1-win-x64.zip
 ```
 
-保留现有 `config.json`；对照 [CHANGELOG.md](CHANGELOG.md) 检查新增配置项。
+测试会解压到带空格的临时路径，设置独立 `USERPROFILE`，直接运行 EXE 版本、smoke、Mock 保存/导出和一键启动脚本。它不使用系统 Python执行应用。
 
-## 7. 运维 Runbook
+当前产物未签名。没有代码签名证书时，不声明 Windows SmartScreen 信誉或签名通过。
 
-### 7.1 启动前检查
+## 一键验收
 
 ```powershell
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --diagnose
-.venv\Scripts\python.exe src\cloud_asr_volcengine.py --list-devices
+.\一键验收.bat --no-pause
 ```
 
-### 7.2 常见问题
+默认执行编译、Ruff、pytest、离线 fixture、HTTP Mock、性能、Windows 真实音频、Docker、便携包、secret/端口扫描和 `git diff --check`。维护者可在明确知道验收边界时对单项使用 `scripts\verify-all.ps1` 的 `-SkipWindowsAudio`、`-SkipDocker`、`-SkipPackage`。
 
-| 现象 | 处理 |
+## 更新
+
+保留本机 `config.json` 后替换源码或便携目录。先比较 `config.example.json` 新字段，再运行：
+
+```powershell
+python -m pytest tests -q
+python src\cloud_asr_volcengine.py --smoke-test --config config.example.json
+```
+
+结构化会话 schema 当前为版本 1；更新不会迁移或删除已有会议数据。
+
+## 卸载
+
+便携版不注册服务、注册表启动项或计划任务。按 `Q` 退出后删除解压目录即可。默认会议数据在桌面 `实时监听`，是否删除由用户单独决定；应用不会因卸载自动删除敏感记录。
+
+## 故障排查
+
+| 现象 | 建议 |
 | --- | --- |
-| 无识别结果 | 确认会议声音从电脑播放；`--list-devices` 检查 loopback 设备 |
-| ASR 握手失败 | 检查 `cloud_asr_api_key` / 火山控制台用量余额 |
-| AI 不触发 | 仅「像问题」的语句会调用 LLM；见 USAGE.md 常见问题 |
-| 热词无效 | 词表须与 ASR Key 同应用；配置了 `boosting_table_id` 后内联热词被跳过 |
+| `api_key 未配置` | 设置环境变量或本机 `config.json`；Mock 演示无需 Key |
+| 设备列表为空 | 检查 Windows 音频服务、驱动和麦克风隐私权限 |
+| loopback 有设备但无信号 | 核对会议软件正在使用的输出设备；用 TUI `1` 切换 |
+| 混合只收到一路 | 检查另一设备是否断开；状态会显示恢复中，已有一路继续工作 |
+| ASR 鉴权失败 | 校验 Key、resource ID 与账号权限；该错误不会自动无限重连 |
+| ASR 重连达到上限 | 检查网络后重新启动；已确认文本仍在 JSON/TXT 中 |
+| AI SSE 断开 | 自动有限重试；仍失败时按 `R`，或 `C` 取消后继续转写 |
+| 便携 EXE 找不到资源 | 重新运行 build + clean-profile smoke，不要只复制单个 EXE |
 
-### 7.3 排障材料
-
-向维护者提供（**脱敏后**）：
-
-- `YYYY-MM-DD_运行日志.txt`
-- `config.json`（移除真实 Key）
-
-### 7.4 密钥轮换
-
-1. 在火山控制台轮换 ASR / AI Key。
-2. 更新本地 `config.json` 或环境变量。
-3. 重启程序；无需重装依赖。
-
-## 8. CI 与发布
-
-GitHub Actions（`.github/workflows/ci.yml`）在每次 push/PR 执行：
-
-- `py_compile` 语法检查
-- `--smoke-test`（无密钥）
-- `pip audit` 依赖审计（informational）
-- Docker Compose smoke
-
-发布前在 Windows 宿主机做一次 `--diagnose` 与真实会议 smoke 验证。
-
-## 9. Docker 化可行性评估（P3）
-
-> **评估日期**：2026-07-06（project-hub-1）
-> **结论**：**维持「Windows 宿主机生产 + Docker smoke 诊断」双轨**；不建议将完整实时转写链路迁入 Linux 容器。Docker 在本项目的可验收价值是 **CI/作品集依赖自检**，不是替代桌面运行时。
-
-### 9.1 核心约束
-
-| 约束 | 说明 | 对 Docker 化的影响 |
-| --- | --- | --- |
-| **WASAPI Loopback** | 采集 Windows 系统声音（腾讯会议等从扬声器播放），依赖 `sounddevice` + WinMM/WASAPI | Linux 容器**无**等价 API；WSL2 音频直通实验性且不稳定 |
-| **火山 ASR WebSocket** | 实时流式上行音频帧 | 容器内**可**发网，但无音频源则链路无意义 |
-| **桌面文件输出** | 默认 `桌面\实时监听\` 滚动写入 txt | 容器需卷挂载 + 路径映射，UX 不如本机 bat |
-| **CLI 交互模型** | 无 Web GUI；用户双击 bat 即跑 | 容器化不改善 UX，反而增加音频设备映射复杂度 |
-| **Hub Profile** | ai-portfolio 矩阵标 **Windows 原生 / N/A Docker 运行时** | verify-all **跳过**本项容器探测属预期 |
-
-### 9.2 方案对比矩阵
-
-| 方案 | 可行性 | 覆盖能力 | 成本 | 推荐场景 |
-| --- | :---: | --- | --- | --- |
-| **A. 现状：Docker smoke**（已实现） | ✅ 高 | 依赖安装、`--smoke-test`、问题启发式、CI badge | 低 | **Portfolio / GHA / Hub 矩阵 Docker 维度** |
-| **B. Windows 宿主机 BYOK**（已实现） | ✅ 高 | WASAPI + 真实 ASR + SSE AI + 文件输出 | 用户自备 Key | **生产 / 真实会议** |
-| **C. 本地 Mock**（`demo-mock.ps1`） | ✅ 高 | Mock ASR/AI HTTP，零密钥闭环 | 低 | **演示 / dry_run / k6** |
-| **D. Linux 全功能容器** | ❌ 低 | 无法采集系统声音；仅能跑 smoke 子集 | 中 | **不推荐**作为运行时目标 |
-| **E. WSL2 + PulseAudio 直通** | △ 实验 | 理论可采宿主音频，版本/驱动敏感 | 高 | **P3 文档记录即可**，非承诺支持 |
-| **F. Windows 容器（WCOW）** | △ 低 | WASAPI 在容器内仍受限；镜像体积大 | 很高 | **不纳入 Roadmap** |
-| **G. 拆分：Mock 服务容器 + 宿主机采集** | △ 中 | 容器跑 `mock_server.py`；采集仍在宿主机 | 中 | 可选：Hub 拉起 Mock 供 k6，**不**替代 bat |
-
-### 9.3 决策表（按场景选型）
-
-| 你的目标 | 推荐形态 | 命令 / 入口 | 需要 Key |
-| --- | --- | --- | --- |
-| CI 绿 / 作品集 Docker 维度验收 | **Docker smoke** | `docker compose up --build --abort-on-container-exit` | 否 |
-| 本地零密钥演示转写→AI 链路 | **Mock 宿主机** | `.\scripts\demo-mock.ps1` | 否 |
-| 真实开会听写 + AI 参考答案 | **Windows 宿主机 BYOK** | `启动云端实时转写和AI答案.bat` | 是（火山 ASR + AI） |
-| 压测 / 性能基线 | **Mock + dry_run/k6** | `loadtest\dry_run.py` / `loadtest\k6-smoke.js` | 否 |
-| Hub 统一编排一键体验 | **不适用** | Hub 无 meeting Profile（设计如此） | — |
-| 未来 GUI / 托盘状态 | **宿主机 TUI/托盘**（Roadmap） | 仍依赖 WASAPI，与 Docker 正交 | — |
-
-```mermaid
-flowchart TD
-    Q{目标是什么?}
-    Q -->|CI/依赖验收| D[Docker smoke]
-    Q -->|零密钥演示| M[demo-mock.ps1]
-    Q -->|真实会议转写| W[Windows 宿主机 BYOK]
-    Q -->|压测基线| K[Mock + k6/dry_run]
-    D --> OK1[SMOKE OK 三行]
-    M --> OK2[MOCK DEMO OK]
-    W --> OK3[桌面实时监听 txt]
-```
-
-### 9.4 评估结论与 Roadmap
-
-| 决策项 | 结论 |
-| --- | --- |
-| **是否追求 Linux 全功能容器？** | **否** — WASAPI 是产品核心依赖，迁容器收益为负 |
-| **Docker 在本项目的定位** | **诊断 smoke + CI**，与 [PRODUCTION-READINESS](../../ai-portfolio/PRODUCTION-READINESS.md) Docker 维 ✓ 对齐 |
-| **短期（P2）** | README/DEPLOYMENT 决策表上提（本节即交付）；可选 WSL2 实验说明一句带过 |
-| **中期（P3）** | 最小托盘/TUI 显示 ASR+AI 状态（**宿主机**，非容器） |
-| **长期（P3+）** | PyInstaller exe 打包；Mock 服务可选独立 Hub sidecar（仅 k6，不采音频） |
-
-**维护者备忘**：若收到「为什么 Hub verify-all 不检 meeting」类 Issue，指向本节 §9.3 与 ai-portfolio `DOCKER-DESKTOP.md` — meeting 为 **Windows 原生**，Docker smoke 在**子项目 CI** 验收即可。
-
-## 10. 相关文档
-
-- [README.md](README.md) — 架构与快速开始
-- [USAGE.md](USAGE.md) — 详细使用说明
-- [SECURITY.md](SECURITY.md) — 安全策略与漏洞报告
+运行日志只保留状态和计数。排障材料发送前仍应检查并脱敏；不要发送真实 `config.json`。

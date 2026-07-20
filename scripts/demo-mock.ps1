@@ -3,7 +3,7 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot\..
 
-$port = 8765
+$port = 19060
 $base = "http://127.0.0.1:$port"
 
 Write-Host "=== meeting-ai-copilot Mock 演示（零密钥）===" -ForegroundColor Cyan
@@ -25,7 +25,7 @@ try {
         if ($i -eq 30) { throw "Mock 服务启动超时" }
     }
 
-    python scripts/demo_mock_loop.py --base-url $base
+    python scripts/demo_mock_loop.py --base-url $base --fixture tests/fixtures/meeting_question.wav
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     Write-Host "`n--- dry_run 压测 smoke ---" -ForegroundColor Cyan

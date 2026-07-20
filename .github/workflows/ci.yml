@@ -35,7 +35,10 @@ jobs:
           python -m pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
 
       - name: Compile check
-        run: python -m py_compile src/cloud_runtime.py src/cloud_asr_volcengine.py src/transcript_question_fsm.py
+        run: python -m compileall -q src scripts loadtest tests
+
+      - name: Ruff
+        run: python -m ruff check src tests scripts loadtest
 
       - name: Pytest heuristic suite
         run: python -m pytest tests/ -q
@@ -46,9 +49,11 @@ jobs:
       - name: Mock AI test (builtin, zero key)
         run: python src/cloud_asr_volcengine.py --config config.mock-offline.json --test-ai
 
+      - name: Repository secret and port checks
+        run: python scripts/repo_checks.py
+
       - name: Dependency audit
-        run: pip audit --desc
-        continue-on-error: true
+        run: python -m pip_audit -r requirements.txt --desc
 
   docker-smoke:
     name: Docker smoke
@@ -76,9 +81,9 @@ jobs:
 
       - name: Start mock server
         run: |
-          python loadtest/mock_server.py --port 8765 &
+          python loadtest/mock_server.py --port 19060 &
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8765/health >/dev/null; then
+            if curl -sf http://127.0.0.1:19060/health >/dev/null; then
               echo "Mock server ready"
               exit 0
             fi
@@ -88,16 +93,46 @@ jobs:
           exit 1
 
       - name: Python dry-run gate
-        run: python loadtest/dry_run.py --base-url http://127.0.0.1:8765 --iterations 20 --concurrency 4
+        run: python loadtest/dry_run.py --base-url http://127.0.0.1:19060 --iterations 20 --concurrency 4
 
       - name: Mock demo loop (zero key)
-        run: python scripts/demo_mock_loop.py --base-url http://127.0.0.1:8765
+        run: python scripts/demo_mock_loop.py --base-url http://127.0.0.1:19060 --fixture tests/fixtures/meeting_question.wav
 
       - name: k6 smoke + burst (CI thresholds)
         env:
-          MOCK_BASE_URL: http://127.0.0.1:8765
+          MOCK_BASE_URL: http://127.0.0.1:19060
         run: |
           docker run --rm --network host \
             -e MOCK_BASE_URL \
-            -v "${{ github.workspace }}/loadtest:/scripts" \
-            grafana/k6:latest run /scripts/k6_smoke.js
+            -v "${{ github.workspace }}:/workspace" \
+            grafana/k6:latest run /workspace/loadtest/k6_smoke.js
+
+  windows-portable:
+    name: Windows offline & portable smoke
+    runs-on: windows-latest
+    needs: [python-quality]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-build.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt -r requirements-build.txt
+
+      - name: Fixed fixture offline acceptance
+        run: python src/cloud_asr_volcengine.py --mock-demo --fixture tests/fixtures/meeting_question.wav --output-directory "$env:RUNNER_TEMP/meeting-output"
+
+      - name: Build portable package
+        run: ./scripts/build-portable.ps1 -SkipTests
+
+      - name: Clean-profile portable smoke
+        run: ./scripts/test-portable.ps1 -ZipPath dist/meeting-ai-copilot-1.1.0-rc.1-win-x64.zip

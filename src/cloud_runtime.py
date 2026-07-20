@@ -4,9 +4,10 @@ import json
 import os
 import queue
 import re
-import warnings
 import threading
 import time
+import uuid
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,9 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from app_contracts import AnswerRequest, AppError, AppErrorCode, CancellationToken
+from llm_providers import create_llm_provider, stream_with_recovery
+from question_detection import QuestionDetector
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "output_dir_name": "实时监听",
@@ -21,7 +25,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "log_file_name": "运行日志.txt",
     "capture_system_audio": True,
     "capture_microphone": False,
+    "audio_mode": "system",
+    "system_audio_device": None,
+    "microphone_audio_device": None,
     "system_audio_gain": 1.0,
+    "microphone_audio_gain": 1.0,
+    "audio_silence_threshold": 0.0005,
+    "audio_queue_seconds": 3,
     "cloud_asr_enabled": True,
     "cloud_asr_provider": "volcengine_streaming",
     "cloud_asr_endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
@@ -30,6 +40,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cloud_asr_chunk_ms": 100,
     "cloud_asr_sample_rate": 16000,
     "cloud_asr_enable_partial": True,
+    "cloud_asr_reconnect_max_attempts": 6,
+    "cloud_asr_reconnect_base_seconds": 0.5,
+    "cloud_asr_reconnect_max_seconds": 8.0,
+    "cloud_asr_reconnect_stable_seconds": 30.0,
+    "cloud_asr_replay_seconds": 8,
+    "cloud_asr_ping_interval_seconds": 20,
+    "cloud_asr_ping_timeout_seconds": 10,
     "cloud_asr_hotwords": [
         "Java",
         "Spring Boot",
@@ -52,8 +69,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ai_api_key_env": "VOLCENGINE_CODING_PLAN_API_KEY",
     "ai_answer_file_name": "AI参考答案.txt",
     "ai_timeout_seconds": 90,
+    "ai_stream_idle_timeout_seconds": 10,
     "ai_min_question_chars": 12,
     "ai_cooldown_seconds": 8,
+    "ai_duplicate_window_seconds": 60,
+    "ai_question_threshold": 0.55,
+    "ai_auto_answer_enabled": True,
+    "ai_context_max_chars": 4000,
+    "ai_max_answer_chars": 8000,
+    "ai_retry_max_attempts": 3,
+    "ai_retry_base_seconds": 0.25,
     "ai_source_labels": ["云端实时ASR"],
     "ai_send_all_transcript": False,
     "ai_system_prompt": (
@@ -64,6 +89,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "如果转写明显不完整或不像问题，请用一句话说明需要等待更完整的问题。"
         "不要编造具体个人经历，可以给可替换的话术。"
     ),
+    "privacy_require_confirmation": True,
+    "session_enabled": True,
+    "session_retention_days": 30,
+    "session_export_on_stop": True,
 }
 
 
@@ -83,19 +112,46 @@ class Logger:
         self._lock = threading.Lock()
 
     def write(self, message: str) -> None:
-        line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}"
+        safe_message = self._redact(message)
+        line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {safe_message}"
         with self._lock:
             print(line, flush=True)
             with self.log_file.open("a", encoding="utf-8", newline="\n") as f:
                 f.write(line + "\n")
 
+    @staticmethod
+    def _redact(message: str) -> str:
+        text = str(message)
+        patterns = (
+            (r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+", r"\1<redacted>"),
+            (r"(?i)((?:api[_-]?key|access[_-]?key|secret)\s*[:=]\s*)[^\s,;]+", r"\1<redacted>"),
+            (r"\b[A-Za-z0-9_-]{32,}\b", "<redacted-token>"),
+        )
+        for pattern, replacement in patterns:
+            text = re.sub(pattern, replacement, text)
+        return text
+
 
 def load_config(config_path: Path) -> dict[str, Any]:
     config = DEFAULT_CONFIG.copy()
+    user_config: dict[str, Any] = {}
     if config_path.exists():
         with config_path.open("r", encoding="utf-8") as f:
             user_config = json.load(f)
+        if not isinstance(user_config, dict):
+            raise ValueError("配置文件根节点必须是 JSON object")
         config.update(user_config)
+    if "audio_mode" not in user_config:
+        system_enabled = bool(config.get("capture_system_audio", True))
+        microphone_enabled = bool(config.get("capture_microphone", False))
+        if system_enabled and microphone_enabled:
+            config["audio_mode"] = "mixed"
+        elif microphone_enabled:
+            config["audio_mode"] = "microphone"
+        else:
+            config["audio_mode"] = "system"
+    if str(config.get("audio_mode") or "") not in {"system", "microphone", "mixed", "fixture"}:
+        raise ValueError("audio_mode 必须是 system、microphone、mixed 或 fixture")
     return config
 
 
@@ -122,7 +178,9 @@ def dated_file_name(file_name: str, date_text: str) -> str:
 
 def build_paths(config: dict[str, Any]) -> Paths:
     desktop = get_desktop()
-    output_dir = desktop / str(config["output_dir_name"])
+    configured_output = str(config.get("output_directory") or "").strip()
+    output_dir = Path(configured_output).expanduser() if configured_output else desktop / str(config["output_dir_name"])
+    output_dir = output_dir.resolve()
     today = datetime.now().strftime("%Y-%m-%d")
     output_dir.mkdir(parents=True, exist_ok=True)
     return Paths(
@@ -262,13 +320,12 @@ def get_cloud_asr_configured(config: dict[str, Any]) -> bool:
 
 
 def get_ai_api_key(config: dict[str, Any]) -> str:
-    value = str(config.get("ai_api_key") or "").strip()
-    if value:
-        return value
     env_name = str(config.get("ai_api_key_env") or "").strip()
     if env_name:
-        return os.environ.get(env_name, "").strip()
-    return ""
+        environment_value = os.environ.get(env_name, "").strip()
+        if environment_value:
+            return environment_value
+    return str(config.get("ai_api_key") or "").strip()
 
 
 def is_mock_ai(config: dict[str, Any]) -> bool:
@@ -370,115 +427,29 @@ def extract_ai_delta(data: dict[str, Any]) -> str:
 
 
 def stream_ai_answer_api(question: str, config: dict[str, Any]):
-    if is_mock_ai(config):
-        mock_url = str(config.get("mock_base_url") or "").strip()
-        if mock_url:
-            yield from stream_mock_server_ai_answer(question, config)
-        else:
-            yield from stream_builtin_mock_ai_answer(question)
-        return
-
-    api_key = get_ai_api_key(config)
-    if not api_key:
-        raise RuntimeError("AI API Key 未配置")
-
-    base_url = normalize_base_url(str(config.get("ai_base_url") or ""))
-    if not base_url:
-        raise RuntimeError("ai_base_url 未配置")
-
-    model = str(config.get("ai_model") or "").strip()
-    if not model:
-        raise RuntimeError("ai_model 未配置")
-
-    timeout = float(config.get("ai_timeout_seconds", 90))
-    system_prompt = str(config.get("ai_system_prompt") or "")
-    user_text = f"面试官问题：{question.strip()}"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
-    wire_api = str(config.get("ai_wire_api") or "responses").strip().lower()
-
-    if wire_api in {"responses", "response"}:
-        payload = {
-            "model": model,
-            "instructions": system_prompt,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": user_text}],
-                }
-            ],
-            "tools": [],
-            "stream": True,
-        }
-        for event in iter_sse_json(f"{base_url}/responses", payload, headers, timeout):
-            delta = extract_ai_delta(event)
-            if delta:
-                yield delta
-        return
-
-    if wire_api in {"chat", "chat_completions", "chat.completions"}:
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text},
-            ],
-            "stream": True,
-        }
-        for event in iter_sse_json(f"{base_url}/chat/completions", payload, headers, timeout):
-            delta = extract_ai_delta(event)
-            if delta:
-                yield delta
-        return
-
-    raise RuntimeError(f"不支持的 ai_wire_api：{wire_api}")
+    request = AnswerRequest(
+        request_id=uuid.uuid4().hex,
+        session_id="one-shot",
+        question=question,
+        context="",
+        source="CLI",
+        manual=True,
+    )
+    provider = create_llm_provider(config, get_ai_api_key(config))
+    yield from stream_with_recovery(
+        provider,
+        request,
+        CancellationToken(),
+        max_attempts=int(config.get("ai_retry_max_attempts", 3)),
+        base_delay_seconds=float(config.get("ai_retry_base_seconds", 0.25)),
+        timeout_seconds=float(config.get("ai_timeout_seconds", 90)),
+        max_answer_chars=int(config.get("ai_max_answer_chars", 8000)),
+    )
 
 
 def is_question_like(text: str, config: dict[str, Any]) -> bool:
-    clean = re.sub(r"\s+", " ", text).strip()
-    if len(clean) < int(config.get("ai_min_question_chars", 12)):
-        return False
-    if bool(config.get("ai_send_all_transcript", False)):
-        return True
-
-    lowered = clean.lower()
-    if "?" in clean or "？" in clean:
-        return True
-
-    question_markers = [
-        "what ",
-        "how ",
-        "why ",
-        "when ",
-        "where ",
-        "which ",
-        "can you",
-        "could you",
-        "would you",
-        "please explain",
-        "explain ",
-        "tell me",
-        "describe ",
-        "difference between",
-        "compare ",
-        "介绍",
-        "说一下",
-        "讲一下",
-        "解释",
-        "区别",
-        "怎么",
-        "如何",
-        "为什么",
-        "能不能",
-        "请你",
-        "你了解",
-        "有没有",
-        "排查",
-    ]
-    return any(marker in lowered or marker in clean for marker in question_markers)
+    detector = QuestionDetector(config)
+    return detector.score(text) >= detector.threshold
 
 
 def maybe_enqueue_ai_question(
@@ -511,22 +482,58 @@ def maybe_enqueue_ai_question(
         ai_queue.put_nowait((source_label, text.strip()))
         state["last_ai_question"] = normalized
         state["last_ai_time"] = now
-        logger.write(f"已提交 AI 参考答案任务：{text.strip()}")
+        logger.write(f"已提交 AI 参考答案任务：chars={len(text.strip())}")
     except queue.Full:
         logger.write("AI 参考答案队列已满，本次问题已跳过。")
 
 
+class AiTaskController:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: CancellationToken | None = None
+        self._last_request: AnswerRequest | None = None
+
+    def begin(self, request: AnswerRequest) -> CancellationToken:
+        token = CancellationToken()
+        with self._lock:
+            self._active = token
+            self._last_request = request
+        return token
+
+    def finish(self, token: CancellationToken) -> None:
+        with self._lock:
+            if self._active is token:
+                self._active = None
+
+    def cancel_active(self, reason: str = "user") -> bool:
+        with self._lock:
+            token = self._active
+        if token is None:
+            return False
+        token.cancel(reason)
+        return True
+
+    @property
+    def last_request(self) -> AnswerRequest | None:
+        with self._lock:
+            return self._last_request
+
+
 def ai_answer_worker(
-    ai_queue: "queue.Queue[tuple[str, str]]",
+    ai_queue: "queue.Queue[AnswerRequest | tuple[str, str]]",
     stop_event: threading.Event,
     config: dict[str, Any],
     paths: Paths,
     logger: Logger,
     status_tui: Any | None = None,
+    session_store: Any | None = None,
+    task_controller: AiTaskController | None = None,
 ) -> None:
+    controller = task_controller or AiTaskController()
+    provider = create_llm_provider(config, get_ai_api_key(config))
     logger.write(
         "AI参考答案已启用："
-        f"provider={config.get('ai_provider_name')}, "
+        f"provider={provider.name}, "
         f"model={config.get('ai_model')}, "
         f"output={paths.ai_answer_file}"
     )
@@ -539,29 +546,75 @@ def ai_answer_worker(
             f.write("\n" + "-" * 60 + "\n\n")
             f.flush()
 
-    while not stop_event.is_set() or not ai_queue.empty():
+    while not stop_event.is_set():
         try:
-            source_label, question = ai_queue.get(timeout=0.5)
+            queued = ai_queue.get(timeout=0.5)
         except queue.Empty:
             continue
 
+        if isinstance(queued, AnswerRequest):
+            request = queued
+        else:
+            source_label, question = queued
+            request = AnswerRequest(
+                request_id=uuid.uuid4().hex,
+                session_id=str(getattr(session_store, "session_id", "legacy")),
+                question=question,
+                context="",
+                source=source_label,
+            )
+        token = controller.begin(request)
         try:
             if status_tui is not None:
                 status_tui.set_ai("生成中")
+                status_tui.set_answer("")
             logger.write("正在调用 AI 流式生成参考答案...")
-            answer_file = start_ai_answer_stream_today(paths, config, question, source_label)
+            answer_file = start_ai_answer_stream_today(paths, config, request.question, request.source)
+            if session_store is not None:
+                session_store.begin_answer(request)
             delta_count = 0
-            for delta in stream_ai_answer_api(question, config):
+            for delta in stream_with_recovery(
+                provider,
+                request,
+                token,
+                max_attempts=int(config.get("ai_retry_max_attempts", 3)),
+                base_delay_seconds=float(config.get("ai_retry_base_seconds", 0.25)),
+                timeout_seconds=float(config.get("ai_timeout_seconds", 90)),
+                max_answer_chars=int(config.get("ai_max_answer_chars", 8000)),
+            ):
                 append_ai_answer_delta(answer_file, delta)
+                if session_store is not None:
+                    session_store.append_answer_delta(request.request_id, delta)
+                if status_tui is not None:
+                    status_tui.append_answer_delta(delta)
                 delta_count += 1
             finish_ai_answer_stream(answer_file)
+            if session_store is not None:
+                session_store.finish_answer(request.request_id)
             logger.write(f"AI参考答案已流式写入：{answer_file}，chunks={delta_count}")
             if status_tui is not None:
                 status_tui.set_ai("待命")
+        except AppError as exc:
+            status = "cancelled" if exc.code == AppErrorCode.CANCELLED else "failed"
+            if session_store is not None:
+                session_store.finish_answer(request.request_id, status=status, error=exc.safe_message)
+            finish_ai_answer_stream(refresh_paths_for_today(paths, config).ai_answer_file)
+            logger.write(f"AI参考答案{status}：code={exc.code.value}，message={exc.safe_message}")
+            if status_tui is not None:
+                status_tui.set_ai("已取消" if status == "cancelled" else "失败")
+                if status == "cancelled":
+                    status_tui.set_notice("AI 已取消；转写与采集继续")
+                else:
+                    status_tui.set_notice(f"AI 失败：{exc.safe_message}；可按 R 重试")
         except Exception as exc:
-            logger.write(f"AI参考答案生成失败：{exc!r}")
+            if session_store is not None:
+                session_store.finish_answer(request.request_id, status="failed", error="内部错误")
+            logger.write(f"AI参考答案生成失败：type={type(exc).__name__}")
             if status_tui is not None:
                 status_tui.set_ai("失败")
+                status_tui.set_notice("AI 内部错误；可按 R 重试")
+        finally:
+            controller.finish(token)
 
 
 def select_loopback_microphone(audio_device: str | None, logger: Logger):

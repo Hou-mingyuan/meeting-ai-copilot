@@ -1,10 +1,15 @@
 {
   "output_dir_name": "实时监听",
+  "audio_mode": "fixture",
   "ai_provider": "mock",
   "ai_provider_name": "Mock (built-in, zero HTTP)",
   "ai_enabled": true,
   "ai_model": "mock-glm",
   "ai_api_key": "",
   "ai_min_question_chars": 4,
-  "cloud_asr_enabled": false
+  "cloud_asr_enabled": false,
+  "privacy_require_confirmation": true,
+  "session_enabled": true,
+  "session_retention_days": 30,
+  "session_export_on_stop": true
 }
