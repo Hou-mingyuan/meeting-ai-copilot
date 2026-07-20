@@ -4,6 +4,22 @@ param(
     [switch]$IncludeWindowsAudio
 )
 
+function Invoke-BatchLauncher {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [string[]]$Arguments = @()
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) { throw "portable launcher is missing: $Path" }
+    $commandLine = 'call "' + $Path.Replace('"', '""') + '"'
+    foreach ($argument in $Arguments) {
+        $commandLine += ' "' + $argument.Replace('"', '""') + '"'
+    }
+    & $env:ComSpec /d /s /c $commandLine
+    if ($LASTEXITCODE -ne 0) { throw "portable launcher failed with exit code $LASTEXITCODE`: $Path" }
+}
+
 $ErrorActionPreference = "Stop"
 $zip = (Resolve-Path -LiteralPath $ZipPath).Path
 $sandbox = Join-Path $env:TEMP "Meeting AI Copilot Clean User Smoke"
@@ -36,10 +52,8 @@ try {
             --report (Join-Path $output "windows-audio.json")
         if ($LASTEXITCODE -ne 0) { throw "portable Windows audio acceptance failed" }
     }
-    & (Join-Path $package "启动云端实时转写和AI答案.bat") --smoke-test
-    if ($LASTEXITCODE -ne 0) { throw "portable one-click launcher smoke failed" }
-    & (Join-Path $package "一键Mock演示.bat")
-    if ($LASTEXITCODE -ne 0) { throw "portable one-click Mock flow failed" }
+    Invoke-BatchLauncher -Path (Join-Path $package "启动云端实时转写和AI答案.bat") -Arguments @("--smoke-test")
+    Invoke-BatchLauncher -Path (Join-Path $package "一键Mock演示.bat")
 } finally {
     $env:USERPROFILE = $originalProfile
 }
