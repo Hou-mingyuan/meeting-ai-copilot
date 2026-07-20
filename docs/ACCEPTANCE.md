@@ -64,7 +64,7 @@ powershell -File scripts\build-portable.ps1
 powershell -File scripts\test-portable.ps1 -ZipPath dist\meeting-ai-copilot-1.1.0-rc.1-win-x64.zip -IncludeWindowsAudio
 ```
 
-clean-profile smoke 明确输出 `PORTABLE SMOKE PASSED`：版本、EXE smoke、固定 fixture、TUI、包内真实 Windows 音频、会话文件和一键 Mock 脚本均通过。`python_required=false`，路径包含空格。最终 ZIP 为 `meeting-ai-copilot-1.1.0-rc.1-win-x64.zip`，SHA-256 为 `6367b2d21f9a7e65693aa837da5760d880ecd8564e23d6a43ac03529744634d3`；`dist` 不提交。
+clean-profile smoke 明确输出 `PORTABLE SMOKE PASSED`：版本、EXE smoke、固定 fixture、TUI、包内真实 Windows 音频、会话文件和一键 Mock 脚本均通过。`python_required=false`，路径包含空格。最终 ZIP 为 `meeting-ai-copilot-1.1.0-rc.1-win-x64.zip`，SHA-256 为 `19e65fb438449400dcafa1c08da5d762b47b4f301f137f7bab6c8b24504cd6f3`；`dist` 不提交。
 
 该 smoke 使用临时独立 `USERPROFILE`，不是新建 Windows OS 账号；它证明程序不依赖现有用户 Python/应用缓存。当前没有代码签名证书，EXE 未签名。
 

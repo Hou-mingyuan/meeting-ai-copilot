@@ -21,12 +21,12 @@ function Invoke-BatchLauncher {
 }
 
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = (Resolve-Path -LiteralPath $ZipPath).Path
 $sandbox = Join-Path $env:TEMP "Meeting AI Copilot Clean User Smoke"
 if (Test-Path -LiteralPath $sandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force }
 New-Item -ItemType Directory -Path $sandbox | Out-Null
-& tar.exe -xf $zip -C $sandbox
-if ($LASTEXITCODE -ne 0) { throw "portable extraction failed" }
+[System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $sandbox)
 $package = Join-Path $sandbox "meeting-ai-copilot-portable"
 $exe = Join-Path $package "MeetingAICopilot/MeetingAICopilot.exe"
 $profile = Join-Path $sandbox "Clean User Profile"

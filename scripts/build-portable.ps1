@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $root
 
@@ -50,8 +51,12 @@ if (-not $SkipPyInstaller) {
 }
 
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
-& tar.exe -a -c -f $zipPath -C $outputPath "meeting-ai-copilot-portable"
-if ($LASTEXITCODE -ne 0) { throw "zip creation failed" }
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $stagingPath,
+    $zipPath,
+    [System.IO.Compression.CompressionLevel]::Optimal,
+    $true
+)
 if (-not (Test-Path -LiteralPath $zipPath) -or (Get-Item -LiteralPath $zipPath).Length -le 0) {
     throw "zip output is missing or empty"
 }
