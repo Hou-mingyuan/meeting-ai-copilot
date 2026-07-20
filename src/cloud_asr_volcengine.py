@@ -50,6 +50,18 @@ from status_tui import StatusTui
 from transcript_question_fsm import PartialQuestionState, on_partial_update, on_receive_timeout
 
 
+def configure_console_streams() -> None:
+    # Redirected Windows consoles may default to cp1252 even though the CLI emits Chinese text.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
 def get_cloud_asr_key(config: dict[str, Any], field: str, env_name: str) -> str:
     import os
 
@@ -1003,6 +1015,7 @@ def confirm_capture_consent(config: dict[str, Any], paths, *, preconfirmed: bool
 
 
 def main() -> int:
+    configure_console_streams()
     parser = argparse.ArgumentParser(description="Windows 会议实时转写 + AI 参考答案")
     parser.add_argument("--config", default="config.json", help="配置文件路径")
     parser.add_argument("--version", action="store_true", help="显示版本")

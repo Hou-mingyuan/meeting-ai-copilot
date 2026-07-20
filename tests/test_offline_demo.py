@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from offline_demo import run_offline_acceptance
 
 FIXTURE = Path(__file__).parent / "fixtures" / "meeting_question.wav"
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_fixed_fixture_mock_e2e_is_complete(tmp_path: Path) -> None:
@@ -37,3 +41,29 @@ def test_session_json_does_not_mislabel_ai_as_transcript(tmp_path: Path) -> None
     data = json.loads(Path(report["session_json"]).read_text(encoding="utf-8"))
     assert all(item["source"].startswith("Mock ASR") for item in data["transcripts"])
     assert all(item["label"] == "AI 参考答案（非会议原话）" for item in data["answers"])
+
+
+def test_offline_cli_handles_legacy_windows_console_encoding(tmp_path: Path) -> None:
+    environment = os.environ.copy()
+    environment["PYTHONIOENCODING"] = "cp1252"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "src/cloud_asr_volcengine.py",
+            "--mock-demo",
+            "--fixture",
+            str(FIXTURE),
+            "--output-directory",
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    assert result.returncode == 0, stderr
+    stdout = result.stdout.decode("utf-8")
+    assert "请解释一下 Redis 缓存和 MySQL 索引分别解决什么问题？" in stdout
+    assert "MOCK ACCEPTANCE PASSED" in stdout
